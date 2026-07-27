@@ -12,7 +12,7 @@ Przebieg jest dwufazowy:
 
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Optional
@@ -51,6 +51,10 @@ class Trade:
     direction: int = 0
     status: str = STATUS_SKIPPED
     skip_reason: Optional[str] = None
+
+    # tylko dla strategii wybicia: która granica zakresu puściła i która to próba w tym dniu
+    breakout_side: Optional[str] = None  # 'up' | 'down'
+    attempt: int = 1
 
     entry_ts: Optional[datetime] = None
     entry_price: float = 0.0
@@ -103,6 +107,9 @@ class Trade:
             "direction_label": "LONG" if self.direction == LONG else ("SHORT" if self.direction == SHORT else "—"),
             "status": self.status,
             "skip_reason": self.skip_reason,
+            "breakout_side": self.breakout_side,
+            "breakout_label": {"up": "górą", "down": "dołem"}.get(self.breakout_side or "", "—"),
+            "attempt": self.attempt,
             "entry_time": _local(self.entry_ts),
             "entry_price": self.entry_price,
             "stop_loss": self.stop_loss,
@@ -155,6 +162,17 @@ def _aggregate(window: list[Bar]) -> tuple[float, float, float, float]:
     )
 
 
+def _apply_direction_mode(cfg: BacktestConfig, base: int) -> tuple[int, Optional[str]]:
+    """Nakłada tryb kierunku na surowy sygnał. Wspólne dla obu strategii."""
+    if cfg.direction_mode == "follow":
+        return base, None
+    if cfg.direction_mode == "invert":
+        return -base, None
+    if cfg.direction_mode == "long_only":
+        return (LONG, None) if base == LONG else (0, "sygnał krótki pominięty (tryb: tylko long)")
+    return (SHORT, None) if base == SHORT else (0, "sygnał długi pominięty (tryb: tylko short)")
+
+
 def _resolve_direction(cfg: BacktestConfig, candle_open: float, candle_close: float) -> tuple[int, Optional[str]]:
     if candle_close > candle_open:
         base = LONG
@@ -165,13 +183,7 @@ def _resolve_direction(cfg: BacktestConfig, candle_open: float, candle_close: fl
             return 0, "świeca sygnałowa bez zmiany (doji)"
         base = LONG if cfg.doji_mode == "long" else SHORT
 
-    if cfg.direction_mode == "follow":
-        return base, None
-    if cfg.direction_mode == "invert":
-        return -base, None
-    if cfg.direction_mode == "long_only":
-        return (LONG, None) if base == LONG else (0, "sygnał krótki pominięty (tryb: tylko long)")
-    return (SHORT, None) if base == SHORT else (0, "sygnał długi pominięty (tryb: tylko short)")
+    return _apply_direction_mode(cfg, base)
 
 
 def _risk_distance(cfg: BacktestConfig, direction: int, entry: float, low: float, high: float) -> float:
@@ -203,11 +215,36 @@ def _candidate_days(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -> list[
     return [d for d in days if d.weekday() in allowed]
 
 
+def _time_exit_target(cfg: BacktestConfig, entry_ts: datetime, tz: ZoneInfo) -> Optional[datetime]:
+    """Moment opcjonalnego zamknięcia pozycji o określonej godzinie."""
+    if not cfg.closes_at_time:
+        return None
+    close_time = time(cfg.close_time_hour, cfg.close_time_minute)
+    entry_local = entry_ts.astimezone(tz)
+    target_local = datetime.combine(
+        entry_local.date() + timedelta(days=cfg.close_after_days), close_time, tzinfo=tz
+    )
+    if target_local <= entry_local:
+        target_local = datetime.combine(target_local.date() + timedelta(days=1), close_time, tzinfo=tz)
+    return target_local.astimezone(timezone.utc)
+
+
 def _build_trades(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -> list[Trade]:
+    """Dyspozytor strategii. Wszystko poniżej — wyjścia, nakładanie się pozycji,
+    rozliczenie — jest od strategii niezależne i wspólne dla obu."""
+    builder = _build_trades_breakout if cfg.is_breakout else _build_trades_direction
+    trades = builder(bars, cfg, tz)
+
+    if cfg.position_mode in ("skip", "replace"):
+        _apply_overlap_rules(trades, cfg)
+    return trades
+
+
+def _build_trades_direction(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -> list[Trade]:
+    """Strategia 1: kierunek świecy sesyjnej decyduje o stronie pozycji."""
     ts_index = [bar.ts for bar in bars]
     n = len(bars)
     signal_time = time(cfg.signal_hour, cfg.signal_minute)
-    close_time = time(cfg.close_time_hour, cfg.close_time_minute)
     trades: list[Trade] = []
 
     for day in _candidate_days(bars, cfg, tz):
@@ -263,23 +300,186 @@ def _build_trades(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -> list[Tr
         trade.stop_loss = entry_price - direction * risk
         trade.take_profit = entry_price + direction * risk * cfg.rr_ratio
 
-        # --- opcjonalne zamknięcie o określonej godzinie ---
-        target_utc: Optional[datetime] = None
-        if cfg.closes_at_time:
-            entry_local = entry_ts.astimezone(tz)
-            target_local = datetime.combine(
-                entry_local.date() + timedelta(days=cfg.close_after_days), close_time, tzinfo=tz
-            )
-            if target_local <= entry_local:
-                target_local = datetime.combine(
-                    target_local.date() + timedelta(days=1), close_time, tzinfo=tz
+        _simulate_exit(trade, bars, sim_start, cfg, _time_exit_target(cfg, entry_ts, tz))
+
+    return trades
+
+
+# --- strategia 2: wybicie zakresu świecy sesyjnej ----------------------------------
+
+
+def _breakout_window_end(cfg: BacktestConfig, day: date, range_end_local: datetime, tz: ZoneInfo) -> datetime:
+    """Do kiedy wypatrujemy przebicia zakresu."""
+    if cfg.breakout_window_mode == "until_time":
+        end_local = datetime.combine(
+            day, time(cfg.breakout_until_hour, cfg.breakout_until_minute), tzinfo=tz
+        )
+    elif cfg.breakout_window_mode == "hours_after":
+        end_local = range_end_local + timedelta(hours=cfg.breakout_hours)
+    else:  # end_of_day
+        end_local = datetime.combine(day + timedelta(days=1), time(0, 0), tzinfo=tz)
+    return end_local.astimezone(timezone.utc)
+
+
+def _detect_breakout(
+    bar: Bar, upper: float, lower: float, cfg: BacktestConfig
+) -> tuple[Optional[str], float]:
+    """Sprawdza, czy świeca przebiła zakres. Zwraca (strona, cena wejścia)."""
+    if cfg.breakout_trigger == "close_beyond":
+        hit_up, hit_down = bar.close > upper, bar.close < lower
+        entry_up = entry_down = bar.close
+    else:  # touch — zlecenie stop wykonuje się na poziomie, a przy luce po cenie otwarcia
+        hit_up, hit_down = bar.high >= upper, bar.low <= lower
+        entry_up = max(upper, bar.open)
+        entry_down = min(lower, bar.open)
+
+    if hit_up and hit_down:
+        # z samego OHLC nie wynika, który poziom padł pierwszy
+        rule = cfg.breakout_both_sides
+        if rule == "skip":
+            return None, 0.0
+        if rule == "high_first":
+            return "up", entry_up
+        if rule == "low_first":
+            return "down", entry_down
+        # open_proximity: cena rusza od otwarcia, więc bliższy poziom pada wcześniej
+        return ("up", entry_up) if abs(upper - bar.open) <= abs(bar.open - lower) else ("down", entry_down)
+
+    if hit_up:
+        return "up", entry_up
+    if hit_down:
+        return "down", entry_down
+    return None, 0.0
+
+
+def _breakout_risk_distance(
+    cfg: BacktestConfig, side: str, entry: float, r_low: float, r_high: float
+) -> float:
+    """Dystans ryzyka dla wybicia — mierzony do przeciwnej granicy zakresu.
+
+    Kotwicą jest **strona wybicia**, a nie kierunek pozycji. Ma to znaczenie w trybie
+    odwróconym: gdy gramy przeciw wybiciu górą, wejście leży dokładnie na szczycie zakresu,
+    więc liczenie od kierunku pozycji dałoby dystans zerowy. Przy grze zgodnej z wybiciem
+    stop ląduje dokładnie na przeciwnej granicy świecy, a przy grze przeciwnej — tyle samo
+    po drugiej stronie wejścia.
+    """
+    if cfg.sl_method == "candle_range":
+        raw = (entry - r_low) if side == "up" else (r_high - entry)
+    elif cfg.sl_method == "fixed_pips":
+        raw = cfg.sl_pips * cfg.pip_size
+    else:  # percent
+        raw = entry * cfg.sl_percent / 100.0
+    return raw * cfg.sl_multiplier
+
+
+def _build_trades_breakout(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -> list[Trade]:
+    """Strategia 2: notujemy zakres świecy sesyjnej i czekamy, aż cena go przebije.
+
+    Wejście w stronę wybicia, stop loss po przeciwnej stronie zakresu, take profit
+    `rr_ratio` razy dalej. Kolejna próba w danym dniu startuje dopiero po zamknięciu
+    poprzedniej pozycji.
+    """
+    ts_index = [bar.ts for bar in bars]
+    n = len(bars)
+    signal_time = time(cfg.signal_hour, cfg.signal_minute)
+    buffer_price = cfg.breakout_buffer_price
+    trades: list[Trade] = []
+
+    for day in _candidate_days(bars, cfg, tz):
+        start_local = datetime.combine(day, signal_time, tzinfo=tz)
+        range_end_local = start_local + timedelta(minutes=cfg.candle_minutes)
+        i0 = bisect_left(ts_index, start_local.astimezone(timezone.utc))
+        i1 = bisect_left(ts_index, range_end_local.astimezone(timezone.utc))
+
+        window = bars[i0:i1]
+        if not window:
+            trades.append(
+                Trade(
+                    signal_date=day,
+                    weekday=day.weekday(),
+                    skip_reason="brak świec w oknie sygnałowym",
                 )
-            target_utc = target_local.astimezone(timezone.utc)
+            )
+            continue
 
-        _simulate_exit(trade, bars, sim_start, cfg, target_utc)
+        r_open, r_high, r_low, r_close = _aggregate(window)
+        upper = r_high + buffer_price
+        lower = r_low - buffer_price
+        window_end = _breakout_window_end(cfg, day, range_end_local, tz)
 
-    if cfg.position_mode in ("skip", "replace"):
-        _apply_overlap_rules(trades, cfg)
+        limit = {"single": 1, "opposite": 2}.get(
+            cfg.breakout_retry_mode, cfg.breakout_max_per_day
+        )
+        traded = 0
+        emitted = False
+        # strona raz odrzucona (przez tryb kierunku albo zerowy dystans SL) jest odrzucona
+        # na cały dzień — inaczej ten sam powód powtarzałby się na każdej kolejnej świecy
+        blocked: set[str] = set()
+        idx = i1
+
+        while idx < n and bars[idx].ts < window_end and traded < limit:
+            side, entry_raw = _detect_breakout(bars[idx], upper, lower, cfg)
+            if side is None or side in blocked:
+                idx += 1
+                continue
+
+            trade = Trade(
+                signal_date=day,
+                weekday=day.weekday(),
+                signal_open=r_open,
+                signal_high=r_high,
+                signal_low=r_low,
+                signal_close=r_close,
+                breakout_side=side,
+                attempt=traded + 1,
+            )
+            trades.append(trade)
+            emitted = True
+
+            direction, reason = _apply_direction_mode(cfg, LONG if side == "up" else SHORT)
+            if direction == 0:
+                trade.skip_reason = reason
+                blocked.add(side)
+                idx += 1
+                continue
+
+            entry_price = entry_raw + direction * cfg.spread_price
+            risk = _breakout_risk_distance(cfg, side, entry_price, r_low, r_high)
+            if risk <= 0:
+                trade.skip_reason = "dystans Stop Lossa wyszedł zerowy lub ujemny"
+                blocked.add(side)
+                idx += 1
+                continue
+
+            trade.direction = direction
+            trade.status = STATUS_OPEN
+            trade.entry_ts = bars[idx].ts
+            trade.entry_price = entry_price
+            trade.risk_distance = risk
+            trade.stop_loss = entry_price - direction * risk
+            trade.take_profit = entry_price + direction * risk * cfg.rr_ratio
+
+            _simulate_exit(trade, bars, idx, cfg, _time_exit_target(cfg, bars[idx].ts, tz))
+
+            traded += 1
+            if cfg.breakout_retry_mode == "opposite":
+                blocked.add(side)  # druga próba tylko na przeciwnej granicy
+            if trade.exit_ts is None:
+                break  # pozycja dożyła końca danych
+            idx = bisect_right(ts_index, trade.exit_ts)  # kolejna próba po jej zamknięciu
+
+        if not emitted:
+            trades.append(
+                Trade(
+                    signal_date=day,
+                    weekday=day.weekday(),
+                    signal_open=r_open,
+                    signal_high=r_high,
+                    signal_low=r_low,
+                    signal_close=r_close,
+                    skip_reason="zakres nie został przebity w oknie czasowym",
+                )
+            )
 
     return trades
 

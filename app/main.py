@@ -43,6 +43,11 @@ class BacktestRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class CompareRequest(BaseModel):
+    dataset_id: str
+    configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
 class FetchRequest(BaseModel):
     symbol: str = DEFAULT_SYMBOL
     interval: str = "15m"
@@ -305,6 +310,22 @@ def backtest(request: BacktestRequest) -> dict[str, Any]:
         "warnings": result.warnings,
     }
     return response
+
+
+@app.post("/api/compare")
+def compare(request: CompareRequest) -> dict[str, Any]:
+    """Liczy obie strategie na tych samych świecach, każdą z jej własnymi ustawieniami."""
+    if not request.configs:
+        raise DataError("Nie podano żadnej konfiguracji do porównania.")
+
+    results: dict[str, Any] = {}
+    for strategy, raw in request.configs.items():
+        cfg = BacktestConfig.from_dict({**raw, "strategy": strategy})
+        result = _parse(request.dataset_id, cfg.timezone)
+        outcome, tz = run_backtest(result.bars, cfg)
+        results[strategy] = build_response(outcome, cfg, tz)
+
+    return {"results": results}
 
 
 if WEB_DIR.exists():

@@ -1,14 +1,24 @@
 # Backtester GBP/USD — świeca sesyjna 8:00–8:15
 
-Aplikacja webowa, która testuje na danych historycznych taką strategię:
+Aplikacja webowa testująca na danych historycznych **dwie niezależne strategie** oparte na tej
+samej świecy 15-minutowej od 8:00 do 8:15. Przełącznik na górze panelu decyduje, którą liczymy;
+każda ma własny komplet ustawień i własną pamięć, a przycisk **„Porównaj obie strategie"**
+liczy je naraz na tych samych danych i pokazuje obie krzywe kapitału na jednym wykresie.
 
-> Patrzymy na świecę 15-minutową od **8:00 do 8:15**. Jeśli jest **zielona** (wzrostowa),
-> otwieramy pozycję **długą**; jeśli **czerwona** (spadkowa) — **krótką**. Take profit ustawiony
-> jest **4 razy dalej niż stop loss** (RR 4:1). Pozycja nie ma limitu czasowego — żyje aż
-> trafi TP albo SL. Tak sprawdzany jest każdy dzień z historii.
+### Strategia 1 — kierunek świecy
 
-To jest **domyślne ustawienie**, a nie sztywna reguła — w panelu po lewej stronie można zmienić
-każdy element tej logiki: godzinę i długość świecy, kierunek, sposób liczenia stop lossa,
+> Patrzymy na świecę od **8:00 do 8:15**. Jeśli jest **zielona** (wzrostowa), otwieramy pozycję
+> **długą**; jeśli **czerwona** (spadkowa) — **krótką**. Wejście zaraz po jej zamknięciu.
+> Take profit **4 razy dalej niż stop loss** (RR 4:1). Pozycja nie ma limitu czasowego.
+
+### Strategia 2 — wybicie zakresu
+
+> Notujemy **zakres** świecy 8:00–8:15 (jej szczyt i dołek) i **czekamy**, aż w dalszej części
+> sesji cena go przebije górą albo dołem. Gramy **w stronę wybicia**, stop loss stawiamy
+> po **przeciwnej stronie tej świecy**, a take profit **4 razy dalej** niż stop.
+
+W obu przypadkach to tylko **ustawienia domyślne**, a nie sztywne reguły — w panelu po lewej
+można zmienić każdy element: godzinę i długość świecy, kierunek, sposób liczenia stop lossa,
 stosunek RR, zarządzanie pozycją, kapitał, dźwignię i zakres testowanych dni.
 
 ## Uruchomienie
@@ -172,7 +182,28 @@ Przycisk **„Dane demo"** ładuje wbudowany plik z pół roku świec 15-minutow
 | Początek świecy | Godzina otwarcia świecy sygnałowej (domyślnie 08:00). |
 | Długość | Ile minut trwa świeca sygnałowa (domyślnie 15). |
 | Kierunek pozycji | `Podążaj za świecą` = pierwotna logika. Można ją odwrócić albo ograniczyć do samych longów lub shortów. |
-| Gdy świeca bez zmiany | Co zrobić, gdy otwarcie równa się zamknięciu (doji). |
+| Gdy świeca bez zmiany | Co zrobić, gdy otwarcie równa się zamknięciu (doji). Tylko strategia 1. |
+
+### 2b · Ustawienia strategii „wybicie zakresu"
+
+Widoczne po przełączeniu na drugą strategię:
+
+| Pole | Znaczenie |
+|---|---|
+| Do kiedy czekać na wybicie | **Do końca dnia** (domyślnie), **do określonej godziny** (np. 17:00, koniec sesji londyńskiej) albo **przez N godzin** od zamknięcia świecy. Brak wybicia w oknie = dzień bez transakcji. |
+| Co uznajemy za przebicie | **Dotknięcie poziomu** — wystarczy, że cena sięgnie granicy; wejście po cenie tego poziomu, tak jak zadziałałoby zlecenie stop. **Zamknięcie poza zakresem** — świeca musi się zamknąć poza granicą; odfiltrowuje przekłucia knotem, ale wchodzi później i dalej, więc ryzyko na transakcję rośnie. |
+| Bufor wybicia | Ile pipsów cena musi wyjść poza zakres, żeby wybicie się liczyło. Filtruje płytkie przekłucia. 0 = bez filtra. |
+| Gdy jedna świeca przebija obie granice | Z samego OHLC nie wynika, który poziom padł pierwszy. Domyślnie zakładamy, że **bliższy otwarciu** tej świecy (cena rusza od otwarcia). Można też wymusić stronę albo pominąć taki dzień jako nierozstrzygalny. |
+| Powtórki w ciągu dnia | **Jedna transakcja dziennie** (domyślnie), **dopuść wybicie w drugą stronę** po zamknięciu pierwszej pozycji, albo **każde kolejne wybicie** aż do limitu dziennego. Kolejna próba nigdy nie startuje przed zamknięciem poprzedniej. |
+
+Przy tej strategii metoda stop lossa **„zakres świecy"** oznacza przeciwną granicę zakresu —
+przy wybiciu górą stop ląduje na dołku świecy, przy wybiciu dołem na jej szczycie. Pozostałe
+metody (stałe pipsy, procent ceny) działają tak samo jak w strategii 1.
+
+W trybie **odwróconym** (gra przeciw wybiciu, czyli na fałszywe wybicie) dystans ryzyka jest
+mierzony tak samo — do przeciwnej granicy zakresu — ale stop ląduje po drugiej stronie wejścia,
+czyli powyżej wybicia górą. Bez tego dystans wychodziłby zerowy, bo wejście leży dokładnie
+na granicy zakresu.
 
 ### 3 · Logika pozycji
 
@@ -248,6 +279,12 @@ Warto je znać, zanim potraktujesz wynik poważnie:
   odwiedziła poziomy wewnątrz jednej świecy. Domyślnie zakładany jest gorszy wariant. Wgranie
   danych 1- lub 5-minutowych daje dokładniejszy wynik — aplikacja sama złoży z nich świecę
   sygnałową i użyje drobniejszych świec do symulacji wyjść.
+- **Strategia wybicia jest na to szczególnie wrażliwa.** Świeca, na której następuje wybicie,
+  bywa na tyle szeroka, że sięga też stop lossa po przeciwnej stronie zakresu — a z OHLC nie
+  wynika, czy dołek wypadł przed wybiciem, czy po nim. Obowiązuje wtedy ustawienie
+  „gdy jedna świeca dotyka i SL, i TP", domyślnie pesymistyczne. To samo dotyczy świecy
+  przebijającej obie granice naraz. Dane 1-minutowe z Dukascopy rozstrzygają oba przypadki
+  znacznie dokładniej i przy tej strategii warto po nie sięgnąć.
 - **Brak wezwań do uzupełnienia depozytu.** Realny broker zamknąłby część pozycji, zanim kapitał
   dojdzie do zera.
 
@@ -276,9 +313,12 @@ python3 -m pytest tests/ -q
 ```
 
 Testy sprawdzają parser CSV (warianty formatu czasu, separatory, odrzucanie złych wierszy),
-logikę kierunku, wszystkie warianty wyjścia z pozycji, trzy metody stop lossa, trzy tryby
-wielkości pozycji, wszystkie cztery tryby zarządzania pozycją, poprawność stref czasowych
-oraz zatrzymanie backtestu przy wyzerowaniu kapitału.
+obie strategie, wszystkie warianty wyjścia z pozycji, trzy metody stop lossa, trzy tryby
+wielkości pozycji, wszystkie cztery tryby zarządzania pozycją, poprawność stref czasowych,
+zatrzymanie backtestu przy wyzerowaniu kapitału oraz dekoder archiwum Dukascopy.
+
+Dla strategii wybicia dochodzą testy okien czasowych, obu wyzwalaczy, bufora, wejścia przy luce
+otwarcia, czterech wariantów rozstrzygania wybicia obustronnego i trzech trybów powtórek.
 
 ## API
 
@@ -293,4 +333,5 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/dukascopy/start` | Start pobierania z Dukascopy w tle. Zwraca `job_id`. |
 | `GET /api/dukascopy/status/{job_id}` | Postęp pobierania, a po zakończeniu gotowy zbiór danych. |
 | `POST /api/dukascopy/cancel/{job_id}` | Przerwanie pobierania. |
-| `POST /api/backtest` | `{"dataset_id": "...", "config": {...}}` → pełne wyniki. |
+| `POST /api/backtest` | `{"dataset_id": "...", "config": {...}}` → pełne wyniki. Pole `strategy` wybiera `candle_direction` albo `range_breakout`. |
+| `POST /api/compare` | `{"dataset_id": "...", "configs": {"candle_direction": {...}, "range_breakout": {...}}}` → oba komplety wyników naraz. |

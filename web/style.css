@@ -15,6 +15,7 @@
   --axis: #c3c2b7;
   --border: rgba(11, 11, 11, 0.10);
   --series: #2a78d6;
+  --series-2: #eb6834;
   --series-soft: rgba(42, 120, 214, 0.14);
   --good: #0ca30c;
   --good-ink: #006300;
@@ -38,6 +39,7 @@
     --axis: #383835;
     --border: rgba(255, 255, 255, 0.10);
     --series: #3987e5;
+    --series-2: #d95926;
     --series-soft: rgba(57, 135, 229, 0.18);
     --good: #0ca30c;
     --good-ink: #0ca30c;
@@ -154,6 +156,69 @@ h2 { font-size: 1rem; }
   overflow-y: auto;
 }
 @media (max-width: 960px) { .panel { position: static; max-height: none; } }
+
+/* przełącznik strategii */
+.strategy-switch {
+  display: flex;
+  gap: 4px;
+  margin: 14px 0 8px;
+  padding: 3px;
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.strategy-tab {
+  flex: 1;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.strategy-tab:hover { color: var(--ink); }
+.strategy-tab.is-active { background: var(--series); color: #fff; }
+.strategy-note { margin: 0 0 4px; color: var(--muted); font-size: 0.74rem; line-height: 1.4; }
+
+/* porównanie strategii */
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 12px 0 16px;
+}
+.compare-col {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--page);
+}
+.compare-col h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 8px;
+  font-size: 0.88rem;
+}
+.compare-col h3::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--swatch, var(--series));
+  flex: none;
+}
+.compare-rows { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; font-size: 0.82rem; }
+.compare-rows dt { color: var(--muted); }
+.compare-rows dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.compare-chart { height: 260px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 0.8rem; }
+.legend-swatch { width: 12px; height: 3px; border-radius: 2px; flex: none; }
 
 .group { border: 0; border-top: 1px solid var(--border); margin: 0; padding: 14px 0; }
 .group:first-of-type { border-top: 0; }
@@ -331,6 +396,9 @@ canvas { width: 100%; height: 100%; display: block; }
 .data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .data-table tfoot td { border-top: 1px solid var(--axis); font-weight: 650; }
 
+/* kolumna z granicą wybicia ma sens tylko przy strategii wybicia */
+#trades-table[data-strategy="candle_direction"] [data-strategy-col="range_breakout"] { display: none; }
+
 .row-skipped { color: var(--muted); }
 .row-skipped td { font-style: italic; }
 
@@ -347,6 +415,16 @@ canvas { width: 100%; height: 100%; display: block; }
 .tag-neutral { color: var(--muted); }
 .tag-long { color: var(--series); }
 .tag-short { color: var(--bad); }
+
+.attempt {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.68rem;
+}
 
 .table-empty { margin: 14px 0 0; color: var(--muted); font-size: 0.85rem; }
 

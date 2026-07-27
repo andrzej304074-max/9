@@ -1,8 +1,13 @@
 /* Backtester GBP/USD — logika frontu: konfiguracja, wywołania API i render wyników. */
 'use strict';
 
-const STORAGE_KEY = 'gbpusd-backtester-config-v1';
+const STORAGE_KEY = 'gbpusd-backtester-config-v2';
 const WEEKDAY_SHORT = ['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So', 'Nd'];
+const STRATEGIES = ['candle_direction', 'range_breakout'];
+const STRATEGY_LABELS = {
+  candle_direction: 'Kierunek świecy',
+  range_breakout: 'Wybicie zakresu',
+};
 
 const state = {
   defaults: {},
@@ -14,6 +19,10 @@ const state = {
   page: 0,
   pageSize: 250,
   dukascopyJob: null,
+  strategy: 'candle_direction',
+  // każda strategia trzyma własny komplet ustawień, żeby przełączanie nic nie gubiło
+  saved: {},
+  compare: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -70,7 +79,9 @@ async function init() {
     fillSelect($('timezone'), Object.fromEntries(data.timezones.map((t) => [t, t])));
     Object.entries(data.options).forEach(([key, values]) => fillSelect($(key), values));
     fillSelect($('duka_instrument'), data.dukascopy_instruments || {});
-    applyConfig(loadStoredConfig() || state.defaults);
+    state.saved = loadStoredConfigs();
+    state.strategy = state.saved.__active || 'candle_direction';
+    applyConfig(configFor(state.strategy));
     setDefaultDukascopyRange();
   } catch (err) {
     setStatus('Nie udało się pobrać ustawień z serwera: ' + err.message, 'error');
@@ -118,10 +129,11 @@ function wireEvents() {
     setStatus(`Popraw pole „${name ? name.textContent : field.id}”: ${field.validationMessage}`, 'error');
   }, true);
   $('btn-reset').addEventListener('click', () => {
-    applyConfig(state.defaults);
-    localStorage.removeItem(STORAGE_KEY);
+    delete state.saved[state.strategy];   // reset dotyczy tylko bieżącej strategii
+    applyConfig(configFor(state.strategy));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.saved));
     syncConditionalFields();
-    setStatus('Przywrócono ustawienia domyślne.', 'ok');
+    setStatus(`Przywrócono ustawienia domyślne strategii „${STRATEGY_LABELS[state.strategy]}”.`, 'ok');
   });
   $('btn-sample').addEventListener('click', loadSample);
   $('btn-fetch').addEventListener('click', fetchFromNetwork);
@@ -139,8 +151,18 @@ function wireEvents() {
     renderTradesTable();
   });
 
-  ['sl_method', 'position_mode', 'sizing_mode', 'direction_mode'].forEach((id) => {
+  ['sl_method', 'position_mode', 'sizing_mode', 'direction_mode',
+   'breakout_window_mode', 'breakout_retry_mode', 'breakout_trigger'].forEach((id) => {
     $(id).addEventListener('change', syncConditionalFields);
+  });
+
+  document.querySelectorAll('.strategy-tab').forEach((tab) => {
+    tab.addEventListener('click', () => switchStrategy(tab.dataset.strategy));
+  });
+  $('btn-compare').addEventListener('click', runCompare);
+  $('btn-compare-close').addEventListener('click', () => {
+    state.compare = null;
+    $('compare-card').hidden = true;
   });
 
   document.querySelectorAll('#trades-table th[data-sort]').forEach((th) => {
@@ -157,6 +179,7 @@ function wireEvents() {
 
   window.addEventListener('resize', () => {
     if (state.chart) drawChart();
+    if (state.compare) drawCompareChart();
   });
 }
 
@@ -168,11 +191,14 @@ function applyConfig(cfg) {
   set('timezone', cfg.timezone);
   set('signal_time', pad2(cfg.signal_hour) + ':' + pad2(cfg.signal_minute));
   set('close_time', pad2(cfg.close_time_hour) + ':' + pad2(cfg.close_time_minute));
+  set('breakout_until', pad2(cfg.breakout_until_hour) + ':' + pad2(cfg.breakout_until_minute));
 
   ['candle_minutes', 'direction_mode', 'doji_mode', 'entry_mode', 'rr_ratio', 'sl_method',
    'sl_pips', 'sl_percent', 'sl_multiplier', 'pip_size', 'spread_pips', 'tie_break',
    'position_mode', 'close_after_days', 'initial_capital', 'leverage', 'sizing_mode',
-   'risk_percent', 'lookback_days', 'date_from', 'date_to'].forEach((id) => set(id, cfg[id]));
+   'risk_percent', 'lookback_days', 'date_from', 'date_to',
+   'breakout_window_mode', 'breakout_hours', 'breakout_trigger', 'breakout_buffer_pips',
+   'breakout_retry_mode', 'breakout_max_per_day', 'breakout_both_sides'].forEach((id) => set(id, cfg[id]));
 
   const active = new Set(cfg.weekdays || [0, 1, 2, 3, 4]);
   document.querySelectorAll('.weekday-toggle').forEach((input) => {
@@ -192,8 +218,19 @@ function num(id, fallback) {
 function collectConfig() {
   const [signalHour, signalMinute] = ($('signal_time').value || '08:00').split(':').map(Number);
   const [closeHour, closeMinute] = ($('close_time').value || '22:00').split(':').map(Number);
+  const [untilHour, untilMinute] = ($('breakout_until').value || '17:00').split(':').map(Number);
 
   return {
+    strategy: state.strategy,
+    breakout_window_mode: $('breakout_window_mode').value,
+    breakout_until_hour: untilHour,
+    breakout_until_minute: untilMinute,
+    breakout_hours: num('breakout_hours', 6),
+    breakout_trigger: $('breakout_trigger').value,
+    breakout_buffer_pips: num('breakout_buffer_pips', 0),
+    breakout_retry_mode: $('breakout_retry_mode').value,
+    breakout_max_per_day: num('breakout_max_per_day', 5),
+    breakout_both_sides: $('breakout_both_sides').value,
     timezone: $('timezone').value,
     signal_hour: signalHour,
     signal_minute: signalMinute,
@@ -226,16 +263,81 @@ function collectConfig() {
   };
 }
 
-function loadStoredConfig() {
+function loadStoredConfigs() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...state.defaults, ...JSON.parse(raw) } : null;
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
   } catch {
-    return null;
+    return {};
   }
 }
 
+function configFor(strategy) {
+  return { ...state.defaults, ...(state.saved[strategy] || {}), strategy };
+}
+
+function persistCurrent() {
+  state.saved[state.strategy] = collectConfig();
+  state.saved.__active = state.strategy;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.saved));
+}
+
+function switchStrategy(strategy) {
+  if (strategy === state.strategy) return;
+  persistCurrent();                       // zapamiętaj ustawienia opuszczanej strategii
+  state.strategy = strategy;
+  applyConfig(configFor(strategy));
+  syncConditionalFields();
+  if (state.datasetId) runBacktest();
+}
+
+function paintStrategyTabs() {
+  document.querySelectorAll('.strategy-tab').forEach((tab) => {
+    const active = tab.dataset.strategy === state.strategy;
+    tab.classList.toggle('is-active', active);
+    tab.setAttribute('aria-selected', String(active));
+  });
+  $('strategy-note').textContent = {
+    candle_direction: 'Kierunek świecy 8:00–8:15 decyduje o pozycji: zielona → long, czerwona → short. '
+      + 'Wejście zaraz po jej zamknięciu.',
+    range_breakout: 'Zapamiętujemy zakres świecy 8:00–8:15 i czekamy, aż cena go przebije. '
+      + 'Gramy w stronę wybicia, stop po przeciwnej stronie zakresu.',
+  }[state.strategy] || '';
+  $('trades-table').dataset.strategy = state.strategy;
+}
+
 function syncConditionalFields() {
+  paintStrategyTabs();
+
+  // sekcje należące tylko do jednej ze strategii
+  document.querySelectorAll('[data-strategy-only]').forEach((el) => {
+    el.hidden = el.dataset.strategyOnly !== state.strategy;
+  });
+  document.querySelectorAll('[data-when-window]').forEach((el) => {
+    el.hidden = state.strategy !== 'range_breakout'
+      || el.dataset.whenWindow !== $('breakout_window_mode').value;
+  });
+  document.querySelectorAll('[data-when-retry]').forEach((el) => {
+    el.hidden = state.strategy !== 'range_breakout'
+      || el.dataset.whenRetry !== $('breakout_retry_mode').value;
+  });
+
+  $('trigger-hint').textContent = {
+    touch: 'Wystarczy, że cena sięgnie granicy zakresu — wejście po cenie tego poziomu.',
+    close_beyond: 'Świeca musi zamknąć się poza zakresem — wejście po jej cenie zamknięcia.',
+  }[$('breakout_trigger').value] || '';
+
+  $('retry-hint').textContent = {
+    single: 'Każdy dzień daje najwyżej jedną pozycję.',
+    opposite: 'Po zamknięciu pierwszej pozycji łapiemy jeszcze wybicie przeciwnej granicy.',
+    unlimited: 'Każde kolejne wybicie otwiera nową pozycję, aż do limitu dziennego.',
+  }[$('breakout_retry_mode').value] || '';
+
+  $('sl-method-hint').textContent = $('sl_method').value === 'candle_range'
+    ? (state.strategy === 'range_breakout'
+      ? 'Stop ląduje na przeciwnej granicy zakresu — tej, od której cena się odbiła.'
+      : 'Stop ląduje na dołku świecy (dla longa) albo na jej szczycie (dla shorta).')
+    : '';
+
   const slMethod = $('sl_method').value;
   document.querySelectorAll('[data-when-sl]').forEach((el) => {
     el.hidden = el.dataset.whenSl !== slMethod;
@@ -461,7 +563,7 @@ async function runBacktest() {
     return;
   }
   const config = collectConfig();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  persistCurrent();
 
   await withBusy('btn-run', 'Liczę…', async () => {
     state.result = await callApi('api/backtest', {
@@ -473,6 +575,158 @@ async function runBacktest() {
     const { trades_closed: closed, signal_days: days } = state.result.summary;
     setStatus(`Gotowe — ${closed} zagranych pozycji na ${days} dni sygnałowych.`, 'ok');
   });
+}
+
+/* ---------------- porównanie obu strategii ---------------- */
+
+async function runCompare() {
+  if (!state.datasetId) {
+    setStatus('Najpierw wczytaj dane.', 'error');
+    return;
+  }
+  persistCurrent();
+
+  const configs = {};
+  STRATEGIES.forEach((name) => { configs[name] = configFor(name); });
+  configs[state.strategy] = collectConfig();   // bieżąca strategia bierze stan formularza
+
+  await withBusy('btn-compare', 'Liczę obie strategie…', async () => {
+    const data = await callApi('api/compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset_id: state.datasetId, configs }),
+    });
+    state.compare = data.results;
+    $('results').hidden = false;
+    renderCompare();
+    $('compare-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setStatus('Obie strategie policzone na tych samych danych.', 'ok');
+  });
+}
+
+function compareSeriesColor(index) {
+  const css = getComputedStyle(document.body);
+  return css.getPropertyValue(index === 0 ? '--series' : '--series-2').trim();
+}
+
+function renderCompare() {
+  const results = state.compare;
+  if (!results) return;
+  $('compare-card').hidden = false;
+
+  $('compare-grid').innerHTML = STRATEGIES.filter((name) => results[name]).map((name, index) => {
+    const s = results[name].summary;
+    const rows = [
+      ['Kumulatywna stopa zwrotu', signed(s.return_pct, fmtPct2, '%'), toneClass(s.return_pct)],
+      ['Wynik w pieniądzu', signed(s.net_profit, fmtMoney), toneClass(s.net_profit)],
+      ['Kapitał końcowy', fmtMoney.format(s.final_equity), ''],
+      ['Skuteczność', plainOrDash(s.win_rate, fmtPct2, '%'), ''],
+      ['Transakcji', String(s.trades_closed), ''],
+      ['Dni pominiętych', String(s.trades_skipped), ''],
+      ['Max obsunięcie', '−' + fmtPct2.format(s.max_drawdown_pct) + '%', s.max_drawdown_pct > 0 ? 'value-bad' : ''],
+      ['Profit factor', plainOrDash(s.profit_factor, fmtPct2), ''],
+    ];
+    return `
+      <div class="compare-col" style="--swatch: ${compareSeriesColor(index)}">
+        <h3>${escapeHtml(STRATEGY_LABELS[name] || name)}</h3>
+        <dl class="compare-rows">
+          ${rows.map(([label, value, tone]) =>
+            `<dt>${escapeHtml(label)}</dt><dd class="${tone}">${escapeHtml(value)}</dd>`).join('')}
+        </dl>
+      </div>`;
+  }).join('');
+
+  // dwie serie na wykresie wymagają legendy — kolor nigdy nie niesie znaczenia sam
+  $('compare-legend').innerHTML = STRATEGIES.filter((name) => results[name]).map((name, index) =>
+    `<span class="legend-item">
+       <span class="legend-swatch" style="background:${compareSeriesColor(index)}"></span>
+       ${escapeHtml(STRATEGY_LABELS[name] || name)}
+     </span>`).join('');
+
+  drawCompareChart();
+}
+
+function drawCompareChart() {
+  const results = state.compare;
+  const canvas = $('compare-chart');
+  if (!results || !canvas) return;
+
+  const series = STRATEGIES.filter((name) => results[name]).map((name, index) => ({
+    label: STRATEGY_LABELS[name] || name,
+    color: compareSeriesColor(index),
+    points: results[name].equity_curve.map((p) => ({
+      t: new Date(p.time.replace(' ', 'T')).getTime(),
+      value: p.cumulative_return_pct,
+    })),
+  })).filter((s) => s.points.length >= 2);
+
+  const { ctx, width, height, pad } = chartGeometry(canvas);
+  const css = getComputedStyle(document.body);
+  const grid = css.getPropertyValue('--grid').trim();
+  const axis = css.getPropertyValue('--axis').trim();
+  const muted = css.getPropertyValue('--muted').trim();
+
+  ctx.clearRect(0, 0, width, height);
+  if (!series.length) {
+    ctx.fillStyle = muted;
+    ctx.font = '13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Za mało zamkniętych pozycji, aby narysować porównanie.', width / 2, height / 2);
+    return;
+  }
+
+  const all = series.flatMap((s) => s.points);
+  const tMin = Math.min(...all.map((p) => p.t));
+  const tMax = Math.max(...all.map((p) => p.t)) || tMin + 1;
+  const values = all.map((p) => p.value).concat([0]);
+  const padding = (Math.max(...values) - Math.min(...values)) * 0.08 || 1;
+  const vMin = Math.min(...values) - padding;
+  const vMax = Math.max(...values) + padding;
+
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const x = (t) => pad.left + ((t - tMin) / (tMax - tMin || 1)) * plotW;
+  const y = (v) => pad.top + (1 - (v - vMin) / (vMax - vMin || 1)) * plotH;
+
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 1;
+  for (const tick of niceTicks(vMin, vMax, 5)) {
+    const py = Math.round(y(tick)) + 0.5;
+    ctx.strokeStyle = Math.abs(tick) < 1e-9 ? axis : grid;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(width - pad.right, py);
+    ctx.stroke();
+    ctx.fillStyle = muted;
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtNum1.format(tick) + '%', pad.left - 8, py);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const labels = Math.max(2, Math.min(6, Math.floor(plotW / 90)));
+  for (let i = 0; i < labels; i += 1) {
+    const t = tMin + ((tMax - tMin) * i) / (labels - 1);
+    ctx.fillStyle = muted;
+    ctx.fillText(
+      new Date(t).toLocaleDateString('pl-PL', { day: '2-digit', month: 'short' }),
+      Math.min(width - pad.right, Math.max(pad.left, x(t))), height - pad.bottom + 8,
+    );
+  }
+
+  for (const s of series) {
+    ctx.beginPath();
+    s.points.forEach((p, i) => (i ? ctx.lineTo(x(p.t), y(p.value)) : ctx.moveTo(x(p.t), y(p.value))));
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+
+  canvas.setAttribute('aria-label', 'Porównanie kumulatywnej stopy zwrotu: '
+    + series.map((s) => `${s.label} ${signed(s.points[s.points.length - 1].value, fmtPct2, '%')}`).join(', ')
+    + '. Dokładne liczby w tabeli powyżej.');
 }
 
 function render() {
@@ -826,8 +1080,13 @@ function renderTradesTable() {
   pager.hidden = allRows.length === 0;
   $('page-prev').disabled = state.page === 0;
   $('page-next').disabled = state.page >= pageCount - 1;
+  // przy powtórkach w ciągu dnia jeden dzień daje więcej niż jeden wiersz
+  const days = new Set(allRows.map((t) => t.date)).size;
+  const scope = days === allRows.length
+    ? `${allRows.length.toLocaleString('pl-PL')} dni`
+    : `${allRows.length.toLocaleString('pl-PL')} wierszy z ${days.toLocaleString('pl-PL')} dni`;
   $('page-info').textContent = allRows.length
-    ? `${start + 1}–${start + rows.length} z ${allRows.length.toLocaleString('pl-PL')} dni` +
+    ? `${start + 1}–${start + rows.length} z ${scope}` +
       (pageCount > 1 ? ` · strona ${state.page + 1} z ${pageCount}` : '')
     : '';
 
@@ -837,14 +1096,16 @@ function renderTradesTable() {
       return `<tr class="row-skipped">
         <td>${escapeHtml(t.date)}</td>
         <td>${escapeHtml(t.weekday_name)}</td>
-        <td colspan="10">${escapeHtml(t.skip_reason || 'dzień pominięty')}</td>
+        <td colspan="11">${escapeHtml(t.skip_reason || 'dzień pominięty')}</td>
       </tr>`;
     }
     const dirClass = t.direction === 1 ? 'tag-long' : 'tag-short';
     const outcomeClass = t.exit_reason === 'TP' ? 'tag-tp' : (t.exit_reason === 'SL' ? 'tag-sl' : 'tag-neutral');
+    const attempt = t.attempt > 1 ? ` <span class="attempt">próba ${t.attempt}</span>` : '';
     return `<tr>
       <td>${escapeHtml(t.date)}</td>
-      <td>${escapeHtml(t.weekday_name)}</td>
+      <td>${escapeHtml(t.weekday_name)}${attempt}</td>
+      <td data-strategy-col="range_breakout">${escapeHtml(t.breakout_label)}</td>
       <td><span class="tag ${dirClass}">${escapeHtml(t.direction_label)}</span></td>
       <td class="num">${escapeHtml(fmtPrice.format(t.entry_price))}</td>
       <td class="num">${escapeHtml(fmtPrice.format(t.stop_loss))}</td>
@@ -860,8 +1121,9 @@ function renderTradesTable() {
 }
 
 function exportCsv() {
-  const header = ['data', 'dzien_tygodnia', 'kierunek', 'wejscie', 'stop_loss', 'take_profit',
-    'wyjscie', 'wynik', 'zysk_strata', 'procent', 'narastajaco_procent', 'godziny', 'status', 'powod'];
+  const header = ['data', 'dzien_tygodnia', 'wybicie', 'proba', 'kierunek', 'wejscie', 'stop_loss',
+    'take_profit', 'wyjscie', 'wynik', 'zysk_strata', 'procent', 'narastajaco_procent',
+    'godziny', 'status', 'powod'];
   const lines = [header.join(',')];
 
   for (const t of visibleTrades()) {
@@ -869,6 +1131,8 @@ function exportCsv() {
     lines.push([
       t.date,
       t.weekday_name,
+      t.breakout_side || '',
+      t.attempt,
       played ? t.direction_label : '',
       played ? t.entry_price.toFixed(5) : '',
       played ? t.stop_loss.toFixed(5) : '',

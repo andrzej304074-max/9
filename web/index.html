@@ -35,6 +35,14 @@
   <aside class="panel">
     <form id="config-form" autocomplete="off">
 
+      <div class="strategy-switch" role="tablist" aria-label="Wybór strategii">
+        <button type="button" class="strategy-tab is-active" role="tab"
+                data-strategy="candle_direction" aria-selected="true">Kierunek świecy</button>
+        <button type="button" class="strategy-tab" role="tab"
+                data-strategy="range_breakout" aria-selected="false">Wybicie zakresu</button>
+      </div>
+      <p class="strategy-note" id="strategy-note"></p>
+
       <fieldset class="group">
         <legend>1 · Dane</legend>
         <div class="field">
@@ -128,9 +136,53 @@
           <select id="direction_mode" name="direction_mode"></select>
           <p class="hint" id="direction-hint"></p>
         </div>
-        <div class="field">
+        <div class="field" data-strategy-only="candle_direction">
           <label for="doji_mode">Gdy świeca bez zmiany (doji)</label>
           <select id="doji_mode" name="doji_mode"></select>
+        </div>
+
+        <!-- pola wyłącznie dla strategii wybicia zakresu -->
+        <div data-strategy-only="range_breakout">
+          <div class="field">
+            <label for="breakout_window_mode">Do kiedy czekać na wybicie</label>
+            <select id="breakout_window_mode" name="breakout_window_mode"></select>
+          </div>
+          <div class="row" data-when-window="until_time">
+            <div class="field">
+              <label for="breakout_until">Koniec okna</label>
+              <input type="time" id="breakout_until" value="17:00">
+            </div>
+          </div>
+          <div class="row" data-when-window="hours_after">
+            <div class="field">
+              <label for="breakout_hours">Ile godzin od świecy</label>
+              <input type="number" id="breakout_hours" name="breakout_hours" min="0.25" step="any">
+            </div>
+          </div>
+          <div class="field">
+            <label for="breakout_trigger">Co uznajemy za przebicie</label>
+            <select id="breakout_trigger" name="breakout_trigger"></select>
+            <p class="hint" id="trigger-hint"></p>
+          </div>
+          <div class="field">
+            <label for="breakout_buffer_pips">Bufor wybicia (pipsy)</label>
+            <input type="number" id="breakout_buffer_pips" name="breakout_buffer_pips" min="0" step="any">
+            <p class="hint">Ile cena musi wyjść poza zakres, żeby wybicie się liczyło. 0 = bez filtra.</p>
+          </div>
+          <div class="field">
+            <label for="breakout_both_sides">Gdy jedna świeca przebija obie granice</label>
+            <select id="breakout_both_sides" name="breakout_both_sides"></select>
+            <p class="hint">Z samego OHLC nie wynika, który poziom padł pierwszy.</p>
+          </div>
+          <div class="field">
+            <label for="breakout_retry_mode">Powtórki w ciągu dnia</label>
+            <select id="breakout_retry_mode" name="breakout_retry_mode"></select>
+            <p class="hint" id="retry-hint"></p>
+          </div>
+          <div class="field" data-when-retry="unlimited">
+            <label for="breakout_max_per_day">Limit transakcji na dzień</label>
+            <input type="number" id="breakout_max_per_day" name="breakout_max_per_day" min="1" step="1">
+          </div>
         </div>
       </fieldset>
 
@@ -141,13 +193,14 @@
           <input type="number" id="rr_ratio" name="rr_ratio" min="0.1" step="any">
           <p class="hint">4 = take profit czterokrotnie dalej niż stop loss.</p>
         </div>
-        <div class="field">
+        <div class="field" data-strategy-only="candle_direction">
           <label for="entry_mode">Moment wejścia</label>
           <select id="entry_mode" name="entry_mode"></select>
         </div>
         <div class="field">
           <label for="sl_method">Skąd brać dystans stop lossa</label>
           <select id="sl_method" name="sl_method"></select>
+          <p class="hint" id="sl-method-hint"></p>
         </div>
         <div class="row">
           <div class="field" data-when-sl="fixed_pips">
@@ -249,12 +302,32 @@
         <button type="submit" class="btn btn-primary" id="btn-run">Uruchom backtest</button>
         <button type="button" class="btn btn-ghost" id="btn-reset">Przywróć domyślne</button>
       </div>
+      <div class="actions">
+        <button type="button" class="btn btn-ghost" id="btn-compare">Porównaj obie strategie</button>
+      </div>
       <p class="status" id="status" role="status"></p>
     </form>
   </aside>
 
   <!-- ============ WYNIKI ============ -->
   <main class="results" id="results" hidden>
+
+    <section class="card" id="compare-card" hidden>
+      <div class="card-head">
+        <div>
+          <h2>Porównanie strategii</h2>
+          <p class="card-sub">Obie policzone na tych samych danych, każda z własnymi ustawieniami.</p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-small" id="btn-compare-close">Zamknij</button>
+      </div>
+      <div class="compare-grid" id="compare-grid"></div>
+      <div class="chart-wrap compare-chart">
+        <canvas id="compare-chart" role="img"
+                aria-label="Krzywe kumulatywnej stopy zwrotu obu strategii"></canvas>
+        <div class="tooltip" id="compare-tooltip" hidden></div>
+      </div>
+      <div class="legend" id="compare-legend"></div>
+    </section>
 
     <figure class="card chart-card">
       <figcaption>
@@ -307,6 +380,7 @@
             <tr>
               <th scope="col" data-sort="date">Data</th>
               <th scope="col" data-sort="weekday">Dzień</th>
+              <th scope="col" data-sort="breakout_side" data-strategy-col="range_breakout">Wybicie</th>
               <th scope="col" data-sort="direction">Kierunek</th>
               <th scope="col" class="num" data-sort="entry_price">Wejście</th>
               <th scope="col" class="num" data-sort="stop_loss">Stop loss</th>

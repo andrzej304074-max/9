@@ -11,6 +11,35 @@ from typing import Any, Optional
 
 # --- dozwolone wartości pól wyboru -------------------------------------------------
 
+STRATEGIES = {
+    "candle_direction": "Kierunek świecy sesyjnej",
+    "range_breakout": "Wybicie zakresu świecy",
+}
+
+BREAKOUT_WINDOW_MODES = {
+    "end_of_day": "Do końca dnia",
+    "until_time": "Do określonej godziny",
+    "hours_after": "Przez N godzin od świecy",
+}
+
+BREAKOUT_TRIGGERS = {
+    "touch": "Dotknięcie poziomu",
+    "close_beyond": "Zamknięcie świecy poza zakresem",
+}
+
+BREAKOUT_RETRY_MODES = {
+    "single": "Jedna transakcja dziennie",
+    "opposite": "Dopuść jeszcze wybicie w drugą stronę",
+    "unlimited": "Każde kolejne wybicie",
+}
+
+BREAKOUT_BOTH_SIDES = {
+    "open_proximity": "Pierwszy poziom bliższy otwarciu świecy",
+    "high_first": "Zawsze najpierw górą",
+    "low_first": "Zawsze najpierw dołem",
+    "skip": "Pomiń — nie da się rozstrzygnąć",
+}
+
 DIRECTION_MODES = {
     "follow": "Podążaj za świecą",
     "invert": "Odwróć sygnał",
@@ -73,12 +102,26 @@ class BacktestConfig:
     # --- dane ---
     timezone: str = "Europe/London"
 
-    # --- świeca sygnałowa ---
+    # --- wybór strategii ---
+    strategy: str = "candle_direction"
+
+    # --- świeca sygnałowa (wspólna dla obu strategii) ---
     signal_hour: int = 8
     signal_minute: int = 0
     candle_minutes: int = 15
     direction_mode: str = "follow"
     doji_mode: str = "skip"
+
+    # --- strategia „wybicie zakresu” ---
+    breakout_window_mode: str = "end_of_day"
+    breakout_until_hour: int = 17
+    breakout_until_minute: int = 0
+    breakout_hours: float = 6.0
+    breakout_trigger: str = "touch"
+    breakout_buffer_pips: float = 0.0
+    breakout_retry_mode: str = "single"
+    breakout_max_per_day: int = 5
+    breakout_both_sides: str = "open_proximity"
 
     # --- logika pozycji ---
     entry_mode: str = "next_open"
@@ -120,6 +163,15 @@ class BacktestConfig:
     def closes_at_time(self) -> bool:
         return self.position_mode == "close_at_time"
 
+    @property
+    def is_breakout(self) -> bool:
+        return self.strategy == "range_breakout"
+
+    @property
+    def breakout_buffer_price(self) -> float:
+        """Bufor wybicia wyrażony w jednostkach ceny."""
+        return self.breakout_buffer_pips * self.pip_size
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -143,6 +195,11 @@ class BacktestConfig:
                     f"Dozwolone: {', '.join(sorted(allowed))}."
                 )
 
+        _choice(self.strategy, STRATEGIES, "Strategia")
+        _choice(self.breakout_window_mode, BREAKOUT_WINDOW_MODES, "Okno wybicia")
+        _choice(self.breakout_trigger, BREAKOUT_TRIGGERS, "Wyzwalacz wybicia")
+        _choice(self.breakout_retry_mode, BREAKOUT_RETRY_MODES, "Powtórki wybicia")
+        _choice(self.breakout_both_sides, BREAKOUT_BOTH_SIDES, "Wybicie obustronne")
         _choice(self.direction_mode, DIRECTION_MODES, "Tryb kierunku")
         _choice(self.doji_mode, DOJI_MODES, "Zachowanie na doji")
         _choice(self.entry_mode, ENTRY_MODES, "Moment wejścia")
@@ -184,6 +241,17 @@ class BacktestConfig:
         if self.sizing_mode == "risk_percent" and not 0 < self.risk_percent <= 100:
             raise ConfigError("Ryzyko na transakcję musi mieścić się w przedziale (0; 100]%.")
 
+        if not 0 <= self.breakout_until_hour <= 23:
+            raise ConfigError("Godzina końca okna wybicia musi mieścić się w zakresie 0–23.")
+        if not 0 <= self.breakout_until_minute <= 59:
+            raise ConfigError("Minuta końca okna wybicia musi mieścić się w zakresie 0–59.")
+        if self.breakout_hours <= 0:
+            raise ConfigError("Długość okna wybicia musi być większa od zera.")
+        if self.breakout_buffer_pips < 0:
+            raise ConfigError("Bufor wybicia nie może być ujemny.")
+        if self.breakout_max_per_day < 1:
+            raise ConfigError("Limit transakcji na dzień musi wynosić co najmniej 1.")
+
         if self.lookback_days < 0:
             raise ConfigError("Liczba dni wstecz nie może być ujemna.")
 
@@ -212,6 +280,7 @@ class BacktestConfig:
 def options_payload() -> dict[str, dict[str, str]]:
     """Słowniki opcji dla UI — front nie musi ich duplikować."""
     return {
+        "strategy": STRATEGIES,
         "direction_mode": DIRECTION_MODES,
         "doji_mode": DOJI_MODES,
         "entry_mode": ENTRY_MODES,
@@ -219,4 +288,8 @@ def options_payload() -> dict[str, dict[str, str]]:
         "tie_break": TIE_BREAKS,
         "position_mode": POSITION_MODES,
         "sizing_mode": SIZING_MODES,
+        "breakout_window_mode": BREAKOUT_WINDOW_MODES,
+        "breakout_trigger": BREAKOUT_TRIGGERS,
+        "breakout_retry_mode": BREAKOUT_RETRY_MODES,
+        "breakout_both_sides": BREAKOUT_BOTH_SIDES,
     }
