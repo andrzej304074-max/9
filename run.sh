@@ -13,7 +13,8 @@ if [ ! -f data/GBPUSD_15m_sample.csv ]; then
 fi
 
 echo "==> Instaluję zależności..."
-python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+# requirements-dev.txt = zależności produkcyjne + serwer HTTP i pytest, potrzebne lokalnie
+python3 -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
 
 echo "==> Backtester działa na http://${HOST}:${PORT}"
 exec python3 -m uvicorn app.main:app --host "$HOST" --port "$PORT"

@@ -426,6 +426,8 @@ canvas { width: 100%; height: 100%; display: block; }
   font-size: 0.68rem;
 }
 
+.hint-warn { color: var(--warn); }
+
 .table-empty { margin: 14px 0 0; color: var(--muted); font-size: 0.85rem; }
 
 .pager {

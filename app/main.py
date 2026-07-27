@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import threading
 import uuid
+import zlib
 from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import available_timezones
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,18 +22,24 @@ from .csv_loader import DataError, LoadResult, bars_to_csv, load_bars, suggest_p
 from .dukascopy import DEFAULT_INSTRUMENT, download_bars, instruments_payload
 from .engine import run_backtest
 from .fetch import DEFAULT_SYMBOL, fetch_bars
+from .runtime import (
+    BASE_DIR,
+    IS_SERVERLESS,
+    MAX_UPLOAD_BYTES,
+    describe as describe_runtime,
+    dukascopy_day_limit,
+    state_dir,
+)
 from .stats import build_response
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = BASE_DIR / "web"
-DATA_DIR = BASE_DIR / "data"
-UPLOAD_DIR = DATA_DIR / "uploads"
-DUKASCOPY_CACHE = DATA_DIR / "dukascopy_cache"
-SAMPLE_FILE = DATA_DIR / "GBPUSD_15m_sample.csv"
+SAMPLE_FILE = BASE_DIR / "data" / "GBPUSD_15m_sample.csv"
 
-MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+# Katalogi zapisywalne wskazuje warstwa środowiska — lokalnie `data/`, na Vercelu `/tmp`.
+UPLOAD_DIR = state_dir() / "uploads"
+DUKASCOPY_CACHE = state_dir() / "dukascopy_cache"
 
-app = FastAPI(title="Backtester GBP/USD", version="1.0.0")
+app = FastAPI(title="Backtester GBP/USD", version="1.1.0")
 
 # surowa treść CSV per zbiór danych; parsowanie jest leniwe, bo zależy od strefy czasowej
 _DATASETS: dict[str, str] = {}
@@ -84,10 +92,15 @@ def _dataset_id(text: str) -> str:
 def _store(text: str) -> str:
     dataset_id = _dataset_id(text)
     _DATASETS[dataset_id] = text
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    target = UPLOAD_DIR / f"{dataset_id}.csv"
-    if not target.exists():
-        target.write_text(text, encoding="utf-8")
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        target = UPLOAD_DIR / f"{dataset_id}.csv"
+        if not target.exists():
+            target.write_text(text, encoding="utf-8")
+    except OSError:
+        # Brak miejsca albo katalog tylko do odczytu — pamięć procesu wystarczy,
+        # a front i tak umie wysłać dane ponownie.
+        pass
     return dataset_id
 
 
@@ -99,9 +112,11 @@ def _load_text(dataset_id: str) -> str:
         text = stored.read_text(encoding="utf-8")
         _DATASETS[dataset_id] = text
         return text
+    # Kod 409 zamiast 404: front rozpoznaje go jako „instancja nie zna tych danych”
+    # i sam wysyła CSV jeszcze raz, bez pokazywania błędu użytkownikowi.
     raise HTTPException(
-        status_code=404,
-        detail="Nie znaleziono wczytanych danych. Wgraj plik CSV jeszcze raz.",
+        status_code=409,
+        detail="Serwer nie ma już tych danych w pamięci. Wyślij plik CSV jeszcze raz.",
     )
 
 
@@ -167,16 +182,36 @@ def get_options() -> dict[str, Any]:
         "timezones": popular + others,
         "sample_available": SAMPLE_FILE.exists(),
         "dukascopy_instruments": instruments_payload(),
+        "runtime": describe_runtime(),
     }
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...), timezone: str = "Europe/London") -> dict[str, Any]:
+async def upload(
+    file: UploadFile = File(...),
+    timezone: str = "Europe/London",
+    encoding_hint: str = Form("plain", alias="encoding"),
+) -> dict[str, Any]:
     raw = await file.read()
     if not raw:
         raise DataError("Wysłany plik jest pusty.")
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise DataError("Plik jest za duży (limit 64 MB).")
+        limit_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
+        raise DataError(
+            f"Plik jest za duży (limit {limit_mb:.1f} MB)."
+            + (" Na Vercelu ciało żądania jest ograniczone przez platformę." if IS_SERVERLESS else "")
+        )
+
+    # Front pakuje CSV gzipem, żeby zmieścić się w limicie ciała żądania.
+    if encoding_hint == "gzip" or raw[:2] == b"\x1f\x8b":
+        try:
+            raw = gzip.decompress(raw)
+        # OSError to zły nagłówek, EOFError — plik urwany w transmisji, zlib.error — uszkodzony strumień
+        except (OSError, EOFError, zlib.error) as exc:
+            raise DataError(
+                f"Nie udało się rozpakować przesłanego pliku ({exc}). "
+                "Spróbuj wysłać go jeszcze raz."
+            )
 
     for encoding in ("utf-8-sig", "utf-8", "cp1250", "latin-1"):
         try:
@@ -257,7 +292,13 @@ def _run_dukascopy_job(job_id: str, request: DukascopyRequest) -> None:
 
 @app.post("/api/dukascopy/start")
 def dukascopy_start(request: DukascopyRequest) -> dict[str, Any]:
-    """Uruchamia pobieranie w tle i natychmiast oddaje identyfikator zadania."""
+    """Uruchamia pobieranie i oddaje identyfikator zadania.
+
+    Lokalnie zadanie biegnie w wątku w tle, a front odpytuje o postęp. Na platformie
+    bezserwerowej wątek zginąłby razem z odpowiedzią, a kolejne odpytanie i tak mogłoby
+    trafić na inną instancję — dlatego tam pobieranie wykonuje się w tym samym żądaniu,
+    a gotowy wynik wraca od razu.
+    """
     try:
         start, end = date.fromisoformat(request.date_from), date.fromisoformat(request.date_to)
     except ValueError:
@@ -267,11 +308,29 @@ def dukascopy_start(request: DukascopyRequest) -> dict[str, Any]:
     if start.year < 2003:
         raise DataError("Archiwum Dukascopy sięga 2003 roku — wybierz późniejszą datę początkową.")
 
+    day_limit = dukascopy_day_limit()
+    if day_limit and (end - start).days + 1 > day_limit:
+        raise DataError(
+            f"Ta wersja jest wdrożona bezserwerowo i pojedyncze żądanie ma limit czasu, "
+            f"więc jednorazowo można pobrać najwyżej {day_limit} dni. "
+            f"Wybrano {(end - start).days + 1}. Podziel zakres na krótsze kawałki albo "
+            f"uruchom aplikację lokalnie — tam pobieranie biegnie w tle bez ograniczeń "
+            f"i poradzi sobie z wieloletnią historią."
+        )
+
     job_id = uuid.uuid4().hex[:12]
     with _JOBS_LOCK:
-        if sum(1 for job in _JOBS.values() if job["state"] == "running") >= 2:
+        if not IS_SERVERLESS and sum(1 for job in _JOBS.values() if job["state"] == "running") >= 2:
             raise DataError("Trwa już pobieranie. Poczekaj na jego zakończenie albo je przerwij.")
         _JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "cancel": False}
+
+    if IS_SERVERLESS:
+        _run_dukascopy_job(job_id, request)
+        with _JOBS_LOCK:
+            snapshot = dict(_JOBS[job_id])
+        snapshot.pop("cancel", None)
+        # Front widzi gotowy stan i pomija odpytywanie o postęp.
+        return {"job_id": job_id, **snapshot}
 
     threading.Thread(target=_run_dukascopy_job, args=(job_id, request), daemon=True).start()
     return {"job_id": job_id}
@@ -326,6 +385,26 @@ def compare(request: CompareRequest) -> dict[str, Any]:
         results[strategy] = build_response(outcome, cfg, tz)
 
     return {"results": results}
+
+
+@app.middleware("http")
+async def _cache_static(request, call_next):
+    """Pliki frontu trafiają na CDN, odpowiedzi API nigdy.
+
+    Na Vercelu wszystkie ścieżki przechodzą przez tę funkcję, więc bez nagłówka każdy
+    styl i skrypt budziłby ją na nowo. Statyka jest wersjonowana wdrożeniem, ale HTML
+    trzymamy krótko, żeby po wdrożeniu nie zostać ze starą stroną.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    elif response.status_code == 200:
+        if path.endswith((".css", ".js")):
+            response.headers["Cache-Control"] = "public, max-age=300, s-maxage=86400"
+        elif path in ("/", "") or path.endswith(".html"):
+            response.headers["Cache-Control"] = "public, max-age=0, s-maxage=60, must-revalidate"
+    return response
 
 
 if WEB_DIR.exists():

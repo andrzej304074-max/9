@@ -1,0 +1,8 @@
+# Zależności do pracy lokalnej i testów.
+# Na Vercelu instalowany jest wyłącznie requirements.txt — uvicorn i pytest są tam zbędne,
+# bo serwer HTTP dostarcza platforma, a testy nie biegną w środowisku produkcyjnym.
+-r requirements.txt
+
+uvicorn>=0.27
+pytest>=8.0
+httpx>=0.27          # klient TestClient-a z FastAPI, używany w testach API

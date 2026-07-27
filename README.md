@@ -33,10 +33,29 @@ Skrypt wygeneruje dane demo, doinstaluje zależności i wystartuje serwer na
 Ręcznie, jeśli wolisz:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-dev.txt
 python3 tools/make_sample_data.py          # tylko za pierwszym razem
 python3 -m uvicorn app.main:app --port 8000
 ```
+
+## Wdrożenie w chmurze
+
+Aplikację można postawić na Vercelu — pełna instrukcja krok po kroku jest w **[DEPLOY.md](DEPLOY.md)**.
+
+W skrócie: zaimportuj repozytorium na [vercel.com/new](https://vercel.com/new), zostaw wszystkie
+ustawienia domyślne i kliknij *Deploy*. Konfigurację niesie plik `vercel.json`.
+
+Środowisko bezserwerowe nakłada trzy ograniczenia, z którymi aplikacja radzi sobie sama, ale
+warto o nich wiedzieć:
+
+- **Pobieranie z Dukascopy** jest ograniczone do ~70 dni na jedno żądanie (lokalnie: bez limitu,
+  z paskiem postępu). Wieloletnią historię pobierz lokalnie i wgraj jako plik.
+- **Wgrywany plik** jest pakowany gzipem w przeglądarce; limit 4 MB po kompresji odpowiada
+  mniej więcej 20 MB CSV, czyli kilkunastu latom świec 15-minutowych.
+- **Pamięć między żądaniami jest ulotna** — gdy żądanie trafi na świeżą instancję, front sam
+  wysyła dane ponownie i powtarza operację. Użytkownik widzi tylko dłuższą chwilę oczekiwania.
+
+Do codziennej pracy z wieloletnią historią wygodniejsza jest wersja lokalna.
 
 ## Skąd wziąć dane
 
@@ -300,10 +319,13 @@ app/
   stats.py        metryki i rozbicie na dni tygodnia
   fetch.py        opcjonalne pobieranie danych z Yahoo Finance
   dukascopy.py    pobieranie archiwum tickowego i składanie go w świece
+  runtime.py      rozpoznanie środowiska (lokalne kontra bezserwerowe)
   main.py         serwer HTTP i API
+api/index.py      punkt wejścia funkcji bezserwerowej na Vercelu
 web/              frontend (HTML, CSS, czysty JavaScript — bez zależności)
 tools/            generator danych demo
 tests/            testy jednostkowe
+vercel.json       konfiguracja wdrożenia
 ```
 
 ## Testy

@@ -1,0 +1,15 @@
+# Wdrażamy tylko to, czego potrzebuje działająca aplikacja.
+tests/
+tools/
+requirements-dev.txt
+run.sh
+
+data/uploads/
+data/dukascopy_cache/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.DS_Store

@@ -49,6 +49,7 @@
           <label for="file-input">Plik CSV z TradingView</label>
           <input type="file" id="file-input" accept=".csv,text/csv,text/plain">
           <p class="hint">Na wykresie TradingView: menu „…” → <em>Eksportuj dane wykresu</em> → interwał 15 min.</p>
+          <p class="hint" id="upload-hint" hidden></p>
         </div>
         <div class="row">
           <button type="button" class="btn btn-ghost" id="btn-sample">Dane demo</button>
@@ -114,7 +115,7 @@
               <button type="button" class="btn btn-ghost btn-small" id="btn-duka-cancel">Przerwij</button>
             </div>
           </div>
-          <p class="hint">Pobieranie idzie plik po pliku, jeden na godzinę handlu — miesiąc to
+          <p class="hint" id="duka-hint">Pobieranie idzie plik po pliku, jeden na godzinę handlu — miesiąc to
             kilkanaście sekund, rok kilka minut. Zacznij od krótszego zakresu, żeby sprawdzić połączenie.</p>
         </details>
       </fieldset>

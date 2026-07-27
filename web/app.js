@@ -19,6 +19,9 @@ const state = {
   page: 0,
   pageSize: 250,
   dukascopyJob: null,
+  // skąd wzięły się bieżące dane — pozwala odtworzyć je po utracie stanu na serwerze
+  source: null,
+  runtime: { serverless: false, dukascopy_max_days: 0 },
   strategy: 'candle_direction',
   // każda strategia trzyma własny komplet ustawień, żeby przełączanie nic nie gubiło
   saved: {},
@@ -79,6 +82,8 @@ async function init() {
     fillSelect($('timezone'), Object.fromEntries(data.timezones.map((t) => [t, t])));
     Object.entries(data.options).forEach(([key, values]) => fillSelect($(key), values));
     fillSelect($('duka_instrument'), data.dukascopy_instruments || {});
+    state.runtime = data.runtime || state.runtime;
+    applyRuntimeLimits();
     state.saved = loadStoredConfigs();
     state.strategy = state.saved.__active || 'candle_direction';
     applyConfig(configFor(state.strategy));
@@ -373,7 +378,7 @@ function syncConditionalFields() {
 
 /* ---------------- wczytywanie danych ---------------- */
 
-async function callApi(url, options) {
+async function callApi(url, options, { allowRecovery = true } = {}) {
   const res = await fetch(url, options);
   let payload = null;
   try {
@@ -381,11 +386,68 @@ async function callApi(url, options) {
   } catch {
     /* odpowiedź bez JSON-a */
   }
+
+  // 409 = trafiliśmy na instancję, która nie zna naszego zbioru danych. Przy wdrożeniu
+  // bezserwerowym to normalne (każde żądanie może obsłużyć inny proces), więc zamiast
+  // pokazywać błąd wysyłamy dane jeszcze raz i powtarzamy żądanie.
+  if (res.status === 409 && allowRecovery && state.source) {
+    const recovered = await resendDataset();
+    if (recovered) {
+      const retryOptions = options && options.body && typeof options.body === 'string'
+        ? { ...options, body: options.body.replace(/"dataset_id":"[^"]*"/, `"dataset_id":"${recovered}"`) }
+        : options;
+      return callApi(url, retryOptions, { allowRecovery: false });
+    }
+  }
+
   if (!res.ok) {
     const detail = payload && payload.detail;
     throw new Error(typeof detail === 'string' ? detail : `Błąd serwera (HTTP ${res.status}).`);
   }
   return payload;
+}
+
+/** Odtwarza zbiór danych na serwerze po tym, jak instancja stracila go z pamięci. */
+async function resendDataset() {
+  const source = state.source;
+  if (!source) return null;
+  const tz = encodeURIComponent($('timezone').value);
+
+  let data = null;
+  if (source.kind === 'upload' && source.file) {
+    data = await callApi(`api/upload?timezone=${tz}`, {
+      method: 'POST',
+      body: await buildUploadBody(source.file),
+    }, { allowRecovery: false });
+  } else if (source.kind === 'sample') {
+    data = await callApi(`api/sample?timezone=${tz}`, undefined, { allowRecovery: false });
+  } else {
+    // Dane z Yahoo albo Dukascopy trzeba by pobrać od nowa — na to potrzebna jest
+    // świadoma decyzja użytkownika, więc zwracamy zwykły błąd.
+    return null;
+  }
+
+  state.datasetId = data.dataset_id;
+  return data.dataset_id;
+}
+
+/** Pakuje CSV gzipem, jeśli przeglądarka to potrafi — inaczej nie zmieścimy się w limicie żądania. */
+async function buildUploadBody(file) {
+  const body = new FormData();
+  if (typeof CompressionStream === 'undefined') {
+    body.append('file', file);
+    return body;
+  }
+  try {
+    const packed = await new Response(
+      file.stream().pipeThrough(new CompressionStream('gzip')),
+    ).blob();
+    body.append('file', packed, `${file.name || 'dane'}.gz`);
+    body.append('encoding', 'gzip');
+  } catch {
+    body.append('file', file);
+  }
+  return body;
 }
 
 function onDatasetLoaded(data) {
@@ -418,23 +480,28 @@ function onDatasetLoaded(data) {
 async function uploadFile(event) {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
-  const body = new FormData();
-  body.append('file', file);
   await withBusy('btn-run', 'Wczytuję plik…', async () => {
     const tz = encodeURIComponent($('timezone').value);
-    onDatasetLoaded(await callApi(`api/upload?timezone=${tz}`, { method: 'POST', body }));
+    // plik zostaje pod ręką — pozwala odtworzyć zbiór, gdy serwer straci go z pamięci
+    state.source = { kind: 'upload', file };
+    onDatasetLoaded(await callApi(`api/upload?timezone=${tz}`, {
+      method: 'POST',
+      body: await buildUploadBody(file),
+    }));
   });
 }
 
 async function loadSample() {
   await withBusy('btn-sample', 'Ładuję dane demo…', async () => {
     const tz = encodeURIComponent($('timezone').value);
+    state.source = { kind: 'sample' };
     onDatasetLoaded(await callApi(`api/sample?timezone=${tz}`));
   });
 }
 
 async function fetchFromNetwork() {
   await withBusy('btn-fetch', 'Pobieram dane z sieci…', async () => {
+    state.source = { kind: 'fetch' };
     onDatasetLoaded(await callApi('api/fetch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -444,6 +511,30 @@ async function fetchFromNetwork() {
       }),
     }));
   });
+}
+
+/** Dostosowuje podpowiedzi do ograniczeń środowiska, w którym aplikacja została wdrożona. */
+function applyRuntimeLimits() {
+  const { serverless, dukascopy_max_days: maxDays, max_upload_bytes: maxUpload } = state.runtime;
+  if (!serverless) return;
+
+  const hint = $('duka-hint');
+  if (hint && maxDays) {
+    hint.textContent = `Ta instancja działa bezserwerowo, więc jedno pobranie obejmuje `
+      + `najwyżej ${maxDays} dni. Dłuższą historię pobierz partiami albo uruchom aplikację `
+      + `lokalnie — tam pobieranie biegnie w tle bez limitu.`;
+    hint.classList.add('hint-warn');
+  }
+  const cancel = $('btn-duka-cancel');
+  if (cancel) cancel.hidden = true;   // pobieranie idzie w jednym żądaniu, nie ma czego przerywać
+
+  const uploadHint = $('upload-hint');
+  if (uploadHint && maxUpload) {
+    uploadHint.textContent = `Plik jest kompresowany w przeglądarce przed wysłaniem. `
+      + `Limit po kompresji to ${(maxUpload / (1024 * 1024)).toFixed(1)} MB — `
+      + `w praktyce starcza na kilkanaście lat świec 15-minutowych.`;
+    uploadHint.hidden = false;
+  }
 }
 
 /* ---------------- Dukascopy: pełne archiwum, pobierane w tle ---------------- */
@@ -480,17 +571,30 @@ async function startDukascopy() {
 
   showDukascopyProgress(true);
   $('duka-fill').style.width = '0%';
-  $('duka-text').textContent = 'Nawiązuję połączenie…';
+  $('duka-text').textContent = state.runtime.serverless
+    ? 'Pobieram… (przy wdrożeniu bezserwerowym postęp nie jest raportowany na bieżąco)'
+    : 'Nawiązuję połączenie…';
   setStatus('Pobieram dane z Dukascopy…');
 
   try {
-    const { job_id: jobId } = await callApi('api/dukascopy/start', {
+    state.source = { kind: 'dukascopy' };
+    const job = await callApi('api/dukascopy/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    state.dukascopyJob = jobId;
-    pollDukascopy(jobId);
+
+    // Wdrożenie bezserwerowe kończy pobieranie w tym samym żądaniu i oddaje gotowy
+    // wynik — nie ma czego odpytywać.
+    if (job.state) {
+      showDukascopyProgress(false);
+      if (job.state === 'done') onDatasetLoaded(job.dataset);
+      else setStatus(job.error || 'Pobieranie nie powiodło się.', 'error');
+      return;
+    }
+
+    state.dukascopyJob = job.job_id;
+    pollDukascopy(job.job_id);
   } catch (err) {
     showDukascopyProgress(false);
     setStatus(err.message, 'error');
