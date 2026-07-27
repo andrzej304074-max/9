@@ -68,6 +68,47 @@
           <select id="timezone" name="timezone"></select>
           <p class="hint">Godzina sygnału liczona jest w tej strefie. Ustaw ją tak, jak masz w TradingView.</p>
         </div>
+
+        <details class="subsection" id="dukascopy-box">
+          <summary>Pełna historia z Dukascopy</summary>
+          <p class="hint">Darmowe archiwum danych tickowych sięgające 2003 roku — bez konta i bez
+            limitów planu. Aplikacja pobiera ticki i sama składa z nich świece. Pobrane godziny
+            trafiają do pamięci podręcznej, więc kolejne pobranie tego samego okresu jest natychmiastowe.</p>
+          <div class="field">
+            <label for="duka_instrument">Instrument</label>
+            <select id="duka_instrument"></select>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="duka_from">Od</label>
+              <input type="date" id="duka_from" min="2003-01-01">
+            </div>
+            <div class="field">
+              <label for="duka_to">Do</label>
+              <input type="date" id="duka_to" min="2003-01-01">
+            </div>
+          </div>
+          <div class="field">
+            <label for="duka_interval">Interwał składanych świec</label>
+            <select id="duka_interval">
+              <option value="1">1 minuta (najdokładniej, największy plik)</option>
+              <option value="5">5 minut</option>
+              <option value="15" selected>15 minut</option>
+              <option value="30">30 minut</option>
+              <option value="60">1 godzina</option>
+            </select>
+          </div>
+          <button type="button" class="btn btn-ghost" id="btn-duka">Pobierz z Dukascopy</button>
+          <div class="progress" id="duka-progress" hidden>
+            <div class="progress-track"><div class="progress-fill" id="duka-fill"></div></div>
+            <div class="progress-row">
+              <span class="progress-text" id="duka-text"></span>
+              <button type="button" class="btn btn-ghost btn-small" id="btn-duka-cancel">Przerwij</button>
+            </div>
+          </div>
+          <p class="hint">Pobieranie idzie plik po pliku, jeden na godzinę handlu — miesiąc to
+            kilkanaście sekund, rok kilka minut. Zacznij od krótszego zakresu, żeby sprawdzić połączenie.</p>
+        </details>
       </fieldset>
 
       <fieldset class="group">

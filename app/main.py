@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+import uuid
+from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import available_timezones
@@ -14,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from .config import BacktestConfig, ConfigError, options_payload
 from .csv_loader import DataError, LoadResult, bars_to_csv, load_bars, suggest_pip_size
+from .dukascopy import DEFAULT_INSTRUMENT, download_bars, instruments_payload
 from .engine import run_backtest
 from .fetch import DEFAULT_SYMBOL, fetch_bars
 from .stats import build_response
@@ -22,6 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = BASE_DIR / "web"
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
+DUKASCOPY_CACHE = DATA_DIR / "dukascopy_cache"
 SAMPLE_FILE = DATA_DIR / "GBPUSD_15m_sample.csv"
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
@@ -43,6 +48,28 @@ class FetchRequest(BaseModel):
     interval: str = "15m"
     range: str = "60d"
     timezone: str = "Europe/London"
+
+
+class DukascopyRequest(BaseModel):
+    instrument: str = DEFAULT_INSTRUMENT
+    date_from: str
+    date_to: str
+    interval_minutes: int = 15
+    price: str = "bid"
+    timezone: str = "Europe/London"
+
+
+# Pobieranie z Dukascopy idzie plik po pliku (jeden na godzinę), więc wieloletni zakres
+# trwa minuty — za długo na pojedyncze żądanie HTTP. Zadania biegną w tle, a front
+# odpytuje o postęp.
+_JOBS: dict[str, dict[str, Any]] = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def _job_update(job_id: str, **fields: Any) -> None:
+    with _JOBS_LOCK:
+        if job_id in _JOBS:
+            _JOBS[job_id].update(fields)
 
 
 def _dataset_id(text: str) -> str:
@@ -134,6 +161,7 @@ def get_options() -> dict[str, Any]:
         "defaults": BacktestConfig().to_dict(),
         "timezones": popular + others,
         "sample_available": SAMPLE_FILE.exists(),
+        "dukascopy_instruments": instruments_payload(),
     }
 
 
@@ -185,6 +213,83 @@ def fetch(request: FetchRequest) -> dict[str, Any]:
         "Dane pochodzą z Yahoo Finance, nie z TradingView — kwotowania mogą się nieznacznie różnić."
     ]
     return payload
+
+
+def _run_dukascopy_job(job_id: str, request: DukascopyRequest) -> None:
+    def progress(done: int, total: int) -> None:
+        _job_update(job_id, done=done, total=total)
+
+    def cancelled() -> bool:
+        with _JOBS_LOCK:
+            return _JOBS.get(job_id, {}).get("cancel", False)
+
+    try:
+        bars = download_bars(
+            instrument=request.instrument,
+            start=date.fromisoformat(request.date_from),
+            end=date.fromisoformat(request.date_to),
+            interval_minutes=request.interval_minutes,
+            price=request.price,
+            cache_dir=DUKASCOPY_CACHE,
+            progress=progress,
+            cancelled=cancelled,
+        )
+        dataset_id = _store(bars_to_csv(bars))
+        result = _parse(dataset_id, request.timezone)
+        payload = _dataset_payload(
+            dataset_id, result, f"Dukascopy ({request.instrument.upper()})", request.timezone
+        )
+        payload["warnings"] = payload["warnings"] + [
+            f"Świece złożone z ticków Dukascopy po cenie {request.price}. "
+            "To inny dostawca kwotowań niż TradingView — poziomy mogą się nieznacznie różnić."
+        ]
+        _job_update(job_id, state="done", dataset=payload)
+    except DataError as exc:
+        _job_update(job_id, state="error", error=str(exc))
+    except Exception as exc:  # nieprzewidziany błąd nie może zostawić zadania w zawieszeniu
+        _job_update(job_id, state="error", error=f"Nieoczekiwany błąd pobierania: {exc}")
+
+
+@app.post("/api/dukascopy/start")
+def dukascopy_start(request: DukascopyRequest) -> dict[str, Any]:
+    """Uruchamia pobieranie w tle i natychmiast oddaje identyfikator zadania."""
+    try:
+        start, end = date.fromisoformat(request.date_from), date.fromisoformat(request.date_to)
+    except ValueError:
+        raise DataError("Daty muszą być w formacie RRRR-MM-DD.")
+    if start > end:
+        raise DataError("Data początkowa jest późniejsza niż końcowa.")
+    if start.year < 2003:
+        raise DataError("Archiwum Dukascopy sięga 2003 roku — wybierz późniejszą datę początkową.")
+
+    job_id = uuid.uuid4().hex[:12]
+    with _JOBS_LOCK:
+        if sum(1 for job in _JOBS.values() if job["state"] == "running") >= 2:
+            raise DataError("Trwa już pobieranie. Poczekaj na jego zakończenie albo je przerwij.")
+        _JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "cancel": False}
+
+    threading.Thread(target=_run_dukascopy_job, args=(job_id, request), daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/api/dukascopy/status/{job_id}")
+def dukascopy_status(job_id: str) -> dict[str, Any]:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Nie znaleziono zadania pobierania.")
+        snapshot = dict(job)
+    snapshot.pop("cancel", None)
+    return snapshot
+
+
+@app.post("/api/dukascopy/cancel/{job_id}")
+def dukascopy_cancel(job_id: str) -> dict[str, Any]:
+    with _JOBS_LOCK:
+        if job_id not in _JOBS:
+            raise HTTPException(status_code=404, detail="Nie znaleziono zadania pobierania.")
+        _JOBS[job_id]["cancel"] = True
+    return {"ok": True}
 
 
 @app.post("/api/backtest")

@@ -190,6 +190,43 @@ input:focus-visible, select:focus-visible, button:focus-visible {
   outline-offset: 1px;
 }
 
+/* dodatkowe źródło danych, domyślnie zwinięte, żeby nie zagracać panelu */
+.subsection {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--page);
+}
+.subsection > summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  list-style-position: inside;
+}
+.subsection > summary:hover { color: var(--ink); }
+.subsection[open] > summary { margin-bottom: 6px; }
+.subsection .btn { width: 100%; margin-top: 10px; }
+
+.progress { margin-top: 10px; }
+.progress-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--series);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+.progress-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.progress-text { flex: 1; color: var(--muted); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+.progress .btn { width: auto; margin-top: 0; }
+
 .weekdays { display: flex; flex-wrap: wrap; gap: 4px; }
 .weekdays label {
   display: inline-flex;

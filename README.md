@@ -113,6 +113,49 @@ i koszty finansowania też były inne. Warto porównać wynik z ostatnich 2–3 
 z całej dostępnej historii — jeśli mocno się różnią, to sygnał, że strategia zależy od reżimu,
 a nie od trwałej przewagi.
 
+### Pełna historia z Dukascopy
+
+Sekcja **„Pełna historia z Dukascopy"** w panelu danych (domyślnie zwinięta) pobiera dane
+prosto z darmowego archiwum Dukascopy: **dane tickowe sięgające 2003 roku, bez konta i bez
+limitów planu**. To jedyna opcja w tej aplikacji, która nie jest niczym ścięta — TradingView
+ogranicza eksport tym, ile świec wczyta wykres, a Yahoo oddaje dla 15 minut jakieś 60 dni.
+
+Jak to działa: Dukascopy trzyma po jednym spakowanym pliku na każdą godzinę handlu.
+Aplikacja pobiera je równolegle, rozpakowuje, odczytuje ticki i **sama składa z nich świece**
+o wybranym interwale. Dzięki temu możesz zejść nawet do świec 1-minutowych, co daje
+dokładniejsze wyjścia z pozycji (patrz „Ograniczenia backtestu" niżej).
+
+- Pobieranie idzie w tle, z paskiem postępu i możliwością przerwania — wieloletni zakres
+  nie zablokuje przeglądarki.
+- Pobrane godziny lądują w pamięci podręcznej na dysku (`data/dukascopy_cache/`), więc
+  ponowne pobranie tego samego okresu jest natychmiastowe, a przerwane pobieranie da się wznowić.
+- Świece budowane są po cenie **bid**, tak jak wykresy walutowe pokazuje TradingView.
+- Tempo: miesiąc to kilkanaście sekund, rok kilka minut. Zacznij od krótkiego zakresu,
+  żeby sprawdzić połączenie.
+
+Dostępne instrumenty: GBP/USD (domyślnie), EUR/USD, USD/JPY, EUR/GBP, AUD/USD, USD/CHF,
+USD/CAD i złoto.
+
+> Sama warstwa sieciowa nie została zweryfikowana w środowisku, w którym powstawał projekt —
+> polityka egress blokowała tam `datafeed.dukascopy.com`. Przetestowane jest natomiast wszystko
+> poza samym gniazdem sieciowym: dekoder formatu `.bi5`, skalowanie cen, składanie ticków
+> w świece, pamięć podręczna, raportowanie postępu i obsługa błędów — na plikach budowanych
+> w testach oraz przez uruchomienie całej aplikacji z podstawioną warstwą pobierania.
+
+### Czego NIE da się zrobić: pobieranie historii z TradingView
+
+Dla porządku, bo to częste nieporozumienie: **TradingView nie udostępnia żadnego publicznego
+API do pobierania historii świec.** Biblioteki i serwery MCP z „tradingview" w nazwie
+(np. `tradingview-ta`, `tradingview-screener`) korzystają z endpointu
+`scanner.tradingview.com`, który zwraca **migawkę wskaźników** — bieżące RSI, MACD,
+rekomendację kup/sprzedaj dla symbolu. Nie ma tam serii czasowej i nie da się z tego zbudować
+świec. Narzędzia, które reklamują się backtestem, i tak biorą świece z Yahoo Finance —
+czyli stamtąd, skąd bierze je przycisk „Pobierz z sieci", z tymi samymi ograniczeniami.
+
+Jeśli szukasz sposobu na ominięcie limitów planu TradingView: nie ma czego omijać, bo nie ma
+skąd tych danych wziąć. Zamiast tego użyj Dukascopy albo HistData — dają **więcej** historii
+niż TradingView Premium.
+
 ### Dane demo
 
 Przycisk **„Dane demo"** ładuje wbudowany plik z pół roku świec 15-minutowych. Są to dane
@@ -219,6 +262,7 @@ app/
   engine.py       silnik backtestu
   stats.py        metryki i rozbicie na dni tygodnia
   fetch.py        opcjonalne pobieranie danych z Yahoo Finance
+  dukascopy.py    pobieranie archiwum tickowego i składanie go w świece
   main.py         serwer HTTP i API
 web/              frontend (HTML, CSS, czysty JavaScript — bez zależności)
 tools/            generator danych demo
@@ -246,4 +290,7 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/upload` | Wgranie pliku CSV (multipart). Zwraca `dataset_id`. |
 | `GET /api/sample` | Wczytanie danych demo. |
 | `POST /api/fetch` | Pobranie danych z Yahoo Finance. |
+| `POST /api/dukascopy/start` | Start pobierania z Dukascopy w tle. Zwraca `job_id`. |
+| `GET /api/dukascopy/status/{job_id}` | Postęp pobierania, a po zakończeniu gotowy zbiór danych. |
+| `POST /api/dukascopy/cancel/{job_id}` | Przerwanie pobierania. |
 | `POST /api/backtest` | `{"dataset_id": "...", "config": {...}}` → pełne wyniki. |

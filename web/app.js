@@ -13,6 +13,7 @@ const state = {
   chart: null,
   page: 0,
   pageSize: 250,
+  dukascopyJob: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -68,7 +69,9 @@ async function init() {
     state.options = data.options;
     fillSelect($('timezone'), Object.fromEntries(data.timezones.map((t) => [t, t])));
     Object.entries(data.options).forEach(([key, values]) => fillSelect($(key), values));
+    fillSelect($('duka_instrument'), data.dukascopy_instruments || {});
     applyConfig(loadStoredConfig() || state.defaults);
+    setDefaultDukascopyRange();
   } catch (err) {
     setStatus('Nie udało się pobrać ustawień z serwera: ' + err.message, 'error');
     return;
@@ -122,6 +125,8 @@ function wireEvents() {
   });
   $('btn-sample').addEventListener('click', loadSample);
   $('btn-fetch').addEventListener('click', fetchFromNetwork);
+  $('btn-duka').addEventListener('click', startDukascopy);
+  $('btn-duka-cancel').addEventListener('click', cancelDukascopy);
   $('file-input').addEventListener('change', uploadFile);
   $('btn-export').addEventListener('click', exportCsv);
   $('only-trades').addEventListener('change', () => { state.page = 0; renderTradesTable(); });
@@ -337,6 +342,102 @@ async function fetchFromNetwork() {
       }),
     }));
   });
+}
+
+/* ---------------- Dukascopy: pełne archiwum, pobierane w tle ---------------- */
+
+function setDefaultDukascopyRange() {
+  const end = new Date();
+  end.setDate(end.getDate() - 1);
+  const start = new Date(end);
+  start.setMonth(start.getMonth() - 3);
+  const iso = (d) => d.toISOString().slice(0, 10);
+  $('duka_to').value = iso(end);
+  $('duka_to').max = iso(end);
+  $('duka_from').value = iso(start);
+  $('duka_from').max = iso(end);
+}
+
+function showDukascopyProgress(visible) {
+  $('duka-progress').hidden = !visible;
+  $('btn-duka').disabled = visible;
+}
+
+async function startDukascopy() {
+  const body = {
+    instrument: $('duka_instrument').value,
+    date_from: $('duka_from').value,
+    date_to: $('duka_to').value,
+    interval_minutes: Number($('duka_interval').value),
+    timezone: $('timezone').value,
+  };
+  if (!body.date_from || !body.date_to) {
+    setStatus('Podaj zakres dat do pobrania z Dukascopy.', 'error');
+    return;
+  }
+
+  showDukascopyProgress(true);
+  $('duka-fill').style.width = '0%';
+  $('duka-text').textContent = 'Nawiązuję połączenie…';
+  setStatus('Pobieram dane z Dukascopy…');
+
+  try {
+    const { job_id: jobId } = await callApi('api/dukascopy/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    state.dukascopyJob = jobId;
+    pollDukascopy(jobId);
+  } catch (err) {
+    showDukascopyProgress(false);
+    setStatus(err.message, 'error');
+  }
+}
+
+async function pollDukascopy(jobId) {
+  while (state.dukascopyJob === jobId) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    let job;
+    try {
+      job = await callApi(`api/dukascopy/status/${jobId}`);
+    } catch (err) {
+      showDukascopyProgress(false);
+      setStatus(err.message, 'error');
+      return;
+    }
+
+    if (job.state === 'running') {
+      const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
+      $('duka-fill').style.width = `${pct}%`;
+      $('duka-text').textContent = job.total
+        ? `${pct}% · ${job.done.toLocaleString('pl-PL')} z ${job.total.toLocaleString('pl-PL')} godzin`
+        : 'Przygotowuję listę plików…';
+      continue;
+    }
+
+    state.dukascopyJob = null;
+    showDukascopyProgress(false);
+    if (job.state === 'done') {
+      onDatasetLoaded(job.dataset);
+    } else {
+      setStatus(job.error || 'Pobieranie nie powiodło się.', 'error');
+    }
+    return;
+  }
+}
+
+async function cancelDukascopy() {
+  const jobId = state.dukascopyJob;
+  if (!jobId) return;
+  state.dukascopyJob = null;
+  showDukascopyProgress(false);
+  setStatus('Pobieranie przerwane.');
+  try {
+    await callApi(`api/dukascopy/cancel/${jobId}`, { method: 'POST' });
+  } catch {
+    /* zadanie i tak zostanie porzucone */
+  }
 }
 
 async function withBusy(buttonId, message, task) {

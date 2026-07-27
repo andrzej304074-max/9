@@ -6,5 +6,7 @@ venv/
 
 # pliki wgrane przez użytkownika w trakcie pracy z aplikacją
 data/uploads/
+# pamięć podręczna pobrań z Dukascopy (jeden plik na godzinę handlu)
+data/dukascopy_cache/
 
 .DS_Store
