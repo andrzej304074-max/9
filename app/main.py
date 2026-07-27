@@ -72,6 +72,17 @@ class DukascopyRequest(BaseModel):
     timezone: str = "Europe/London"
 
 
+class DukascopyChunkRequest(BaseModel):
+    """Jeden odcinek pobierania — na tyle krótki, żeby zmieścić się w limicie czasu żądania."""
+
+    instrument: str = DEFAULT_INSTRUMENT
+    date_from: str
+    date_to: str
+    interval_minutes: int = 15
+    price: str = "bid"
+    with_header: bool = True
+
+
 # Pobieranie z Dukascopy idzie plik po pliku (jeden na godzinę), więc wieloletni zakres
 # trwa minuty — za długo na pojedyncze żądanie HTTP. Zadania biegną w tle, a front
 # odpytuje o postęp.
@@ -311,11 +322,9 @@ def dukascopy_start(request: DukascopyRequest) -> dict[str, Any]:
     day_limit = dukascopy_day_limit()
     if day_limit and (end - start).days + 1 > day_limit:
         raise DataError(
-            f"Ta wersja jest wdrożona bezserwerowo i pojedyncze żądanie ma limit czasu, "
-            f"więc jednorazowo można pobrać najwyżej {day_limit} dni. "
-            f"Wybrano {(end - start).days + 1}. Podziel zakres na krótsze kawałki albo "
-            f"uruchom aplikację lokalnie — tam pobieranie biegnie w tle bez ograniczeń "
-            f"i poradzi sobie z wieloletnią historią."
+            f"Pojedyncze żądanie ma limit czasu, więc obejmuje najwyżej {day_limit} dni, "
+            f"a wybrano {(end - start).days + 1}. Dłuższe zakresy pobiera się odcinkami "
+            f"przez /api/dukascopy/chunk — interfejs robi to automatycznie."
         )
 
     job_id = uuid.uuid4().hex[:12]
@@ -334,6 +343,41 @@ def dukascopy_start(request: DukascopyRequest) -> dict[str, Any]:
 
     threading.Thread(target=_run_dukascopy_job, args=(job_id, request), daemon=True).start()
     return {"job_id": job_id}
+
+
+@app.post("/api/dukascopy/chunk")
+def dukascopy_chunk(request: DukascopyChunkRequest) -> dict[str, Any]:
+    """Pobiera jeden odcinek zakresu i oddaje surowy CSV.
+
+    Przy wdrożeniu bezserwerowym długiej historii nie da się pobrać w jednym żądaniu,
+    bo obowiązuje limit czasu. Przeglądarka dzieli więc zakres na odcinki, prosi o nie
+    po kolei i skleja wyniki u siebie — dopiero komplet trafia na serwer jako jeden
+    plik. Dzięki temu żadne pojedyncze żądanie nie przekracza budżetu, a scalanie nie
+    zależy od tego, która instancja obsłużyła który odcinek.
+    """
+    try:
+        start, end = date.fromisoformat(request.date_from), date.fromisoformat(request.date_to)
+    except ValueError:
+        raise DataError("Daty muszą być w formacie RRRR-MM-DD.")
+    if start > end:
+        raise DataError("Data początkowa jest późniejsza niż końcowa.")
+
+    limit = dukascopy_day_limit()
+    if limit and (end - start).days + 1 > limit:
+        raise DataError(f"Pojedynczy odcinek nie może być dłuższy niż {limit} dni.")
+
+    bars = download_bars(
+        instrument=request.instrument,
+        start=start,
+        end=end,
+        interval_minutes=request.interval_minutes,
+        price=request.price,
+        cache_dir=DUKASCOPY_CACHE,
+    )
+    text = bars_to_csv(bars)
+    if not request.with_header:
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    return {"csv": text, "bars": len(bars)}
 
 
 @app.get("/api/dukascopy/status/{job_id}")

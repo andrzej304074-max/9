@@ -48,8 +48,10 @@ ustawienia domyślne i kliknij *Deploy*. Konfigurację niesie plik `vercel.json`
 Środowisko bezserwerowe nakłada trzy ograniczenia, z którymi aplikacja radzi sobie sama, ale
 warto o nich wiedzieć:
 
-- **Pobieranie z Dukascopy** jest ograniczone do ~70 dni na jedno żądanie (lokalnie: bez limitu,
-  z paskiem postępu). Wieloletnią historię pobierz lokalnie i wgraj jako plik.
+- **Pobieranie z Dukascopy** dzieli się na odcinki po ~70 dni, pobierane jeden po drugim aż do
+  wyczerpania zakresu; komplet trafia na serwer jako jeden plik. Zakres może być dowolnie długi,
+  potrwa tylko proporcjonalnie dłużej. Lokalnie zamiast tego działa jedno zadanie w tle
+  z postępem liczonym co plik.
 - **Wgrywany plik** jest pakowany gzipem w przeglądarce; limit 4 MB po kompresji odpowiada
   mniej więcej 20 MB CSV, czyli kilkunastu latom świec 15-minutowych.
 - **Pamięć między żądaniami jest ulotna** — gdy żądanie trafi na świeżą instancję, front sam
@@ -357,3 +359,4 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/dukascopy/cancel/{job_id}` | Przerwanie pobierania. |
 | `POST /api/backtest` | `{"dataset_id": "...", "config": {...}}` → pełne wyniki. Pole `strategy` wybiera `candle_direction` albo `range_breakout`. |
 | `POST /api/compare` | `{"dataset_id": "...", "configs": {"candle_direction": {...}, "range_breakout": {...}}}` → oba komplety wyników naraz. |
+| `POST /api/dukascopy/chunk` | Pobiera jeden odcinek zakresu i zwraca surowy CSV. Używane przy wdrożeniu bezserwerowym, gdzie długą historię kompletuje się z kawałków. |

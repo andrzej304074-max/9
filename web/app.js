@@ -434,20 +434,31 @@ async function resendDataset() {
 /** Pakuje CSV gzipem, jeśli przeglądarka to potrafi — inaczej nie zmieścimy się w limicie żądania. */
 async function buildUploadBody(file) {
   const body = new FormData();
-  if (typeof CompressionStream === 'undefined') {
-    body.append('file', file);
-    return body;
-  }
-  try {
-    const packed = await new Response(
-      file.stream().pipeThrough(new CompressionStream('gzip')),
-    ).blob();
+  const packed = await compress(file);
+  if (packed) {
     body.append('file', packed, `${file.name || 'dane'}.gz`);
     body.append('encoding', 'gzip');
-  } catch {
+  } else {
     body.append('file', file);
   }
   return body;
+}
+
+/** Rozmiar w jednostce czytelnej dla danej wielkości — „0,0 MB” nikomu nic nie mówi. */
+function formatBytes(bytes) {
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+/** Zwraca skompresowany plik albo null, gdy przeglądarka nie umie tego zrobić. */
+async function compress(file) {
+  if (typeof CompressionStream === 'undefined') return null;
+  try {
+    return await new Response(file.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+  } catch {
+    return null;
+  }
 }
 
 function onDatasetLoaded(data) {
@@ -520,13 +531,11 @@ function applyRuntimeLimits() {
 
   const hint = $('duka-hint');
   if (hint && maxDays) {
-    hint.textContent = `Ta instancja działa bezserwerowo, więc jedno pobranie obejmuje `
-      + `najwyżej ${maxDays} dni. Dłuższą historię pobierz partiami albo uruchom aplikację `
-      + `lokalnie — tam pobieranie biegnie w tle bez limitu.`;
-    hint.classList.add('hint-warn');
+    hint.textContent = `Ta instancja działa bezserwerowo, więc jedno żądanie ma limit czasu. `
+      + `Dłuższe zakresy pobierają się automatycznie odcinkami po ${maxDays} dni, jeden po drugim, `
+      + `aż do wyczerpania okresu — możesz spokojnie wybrać kilka lat. Potrwa to odpowiednio dłużej, `
+      + `a przerwać można między odcinkami.`;
   }
-  const cancel = $('btn-duka-cancel');
-  if (cancel) cancel.hidden = true;   // pobieranie idzie w jednym żądaniu, nie ma czego przerywać
 
   const uploadHint = $('upload-hint');
   if (uploadHint && maxUpload) {
@@ -571,10 +580,14 @@ async function startDukascopy() {
 
   showDukascopyProgress(true);
   $('duka-fill').style.width = '0%';
-  $('duka-text').textContent = state.runtime.serverless
-    ? 'Pobieram… (przy wdrożeniu bezserwerowym postęp nie jest raportowany na bieżąco)'
-    : 'Nawiązuję połączenie…';
+  $('duka-text').textContent = 'Nawiązuję połączenie…';
   setStatus('Pobieram dane z Dukascopy…');
+
+  // Gdy środowisko narzuca limit długości jednego żądania, zakres pobieramy odcinkami.
+  if (state.runtime.dukascopy_max_days) {
+    await downloadInChunks(body, state.runtime.dukascopy_max_days);
+    return;
+  }
 
   try {
     state.source = { kind: 'dukascopy' };
@@ -583,21 +596,98 @@ async function startDukascopy() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-
-    // Wdrożenie bezserwerowe kończy pobieranie w tym samym żądaniu i oddaje gotowy
-    // wynik — nie ma czego odpytywać.
-    if (job.state) {
-      showDukascopyProgress(false);
-      if (job.state === 'done') onDatasetLoaded(job.dataset);
-      else setStatus(job.error || 'Pobieranie nie powiodło się.', 'error');
-      return;
-    }
-
     state.dukascopyJob = job.job_id;
     pollDukascopy(job.job_id);
   } catch (err) {
     showDukascopyProgress(false);
     setStatus(err.message, 'error');
+  }
+}
+
+/** Dzieli zakres dat na odcinki nie dłuższe niż `maxDays`. */
+function splitDateRange(fromIso, toIso, maxDays) {
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const end = new Date(`${toIso}T00:00:00Z`);
+  const chunks = [];
+  let cursor = new Date(`${fromIso}T00:00:00Z`);
+
+  while (cursor <= end) {
+    const stop = new Date(cursor);
+    stop.setUTCDate(stop.getUTCDate() + maxDays - 1);
+    if (stop > end) stop.setTime(end.getTime());
+    chunks.push({ from: iso(cursor), to: iso(stop) });
+    cursor = new Date(stop);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return chunks;
+}
+
+/** Pobiera długi zakres kawałek po kawałku i skleja go w przeglądarce.
+ *
+ * Każdy odcinek to osobne żądanie, więc żadne nie przekracza limitu czasu. Sklejony
+ * komplet wraca na serwer jako jeden plik — dokładnie tak, jakby użytkownik wgrał go
+ * ręcznie, co przy okazji pozwala odtworzyć dane po zimnym starcie instancji.
+ */
+async function downloadInChunks(body, maxDays) {
+  const chunks = splitDateRange(body.date_from, body.date_to, maxDays);
+  const token = `chunks-${Date.now()}`;
+  state.dukascopyJob = token;
+
+  const parts = [];
+  let bars = 0;
+  const humanDate = (s) => s.split('-').reverse().join('.');
+
+  try {
+    for (let i = 0; i < chunks.length; i += 1) {
+      if (state.dukascopyJob !== token) return;      // użytkownik przerwał
+
+      $('duka-fill').style.width = `${Math.round((i / chunks.length) * 100)}%`;
+      $('duka-text').textContent = `Odcinek ${i + 1} z ${chunks.length} · `
+        + `${humanDate(chunks[i].from)} → ${humanDate(chunks[i].to)}`
+        + (bars ? ` · ${bars.toLocaleString('pl-PL')} świec` : '');
+
+      const chunk = await callApi('api/dukascopy/chunk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, date_from: chunks[i].from, date_to: chunks[i].to, with_header: i === 0 }),
+      });
+      parts.push(chunk.csv);
+      bars += chunk.bars;
+    }
+    if (state.dukascopyJob !== token) return;
+
+    if (!bars) {
+      throw new Error('W wybranym zakresie nie ma żadnych notowań. Sprawdź daty — '
+        + 'weekendy i święta są w archiwum puste.');
+    }
+
+    $('duka-fill').style.width = '100%';
+    $('duka-text').textContent = `Scalam ${bars.toLocaleString('pl-PL')} świec i wysyłam…`;
+
+    const file = new File([parts.join('')], `dukascopy-${body.instrument}.csv`, { type: 'text/csv' });
+    const limit = state.runtime.max_upload_bytes;
+    const packed = await compress(file);
+    if (limit && packed && packed.size > limit) {
+      throw new Error(
+        `Pobrano ${bars.toLocaleString('pl-PL')} świec, ale scalony plik `
+        + `(${formatBytes(packed.size)} po kompresji) przekracza limit `
+        + `${formatBytes(limit)} tego wdrożenia. Wybierz rzadszy interwał `
+        + `albo krótszy zakres — pobrane godziny są w pamięci podręcznej, więc powtórka będzie szybka.`,
+      );
+    }
+
+    // od tego miejsca dane zachowują się jak zwykły wgrany plik
+    state.source = { kind: 'upload', file };
+    const tz = encodeURIComponent($('timezone').value);
+    onDatasetLoaded(await callApi(`api/upload?timezone=${tz}`, {
+      method: 'POST',
+      body: await buildUploadBody(file),
+    }));
+  } catch (err) {
+    setStatus(err.message, 'error');
+  } finally {
+    state.dukascopyJob = null;
+    showDukascopyProgress(false);
   }
 }
 
@@ -636,9 +726,10 @@ async function pollDukascopy(jobId) {
 async function cancelDukascopy() {
   const jobId = state.dukascopyJob;
   if (!jobId) return;
-  state.dukascopyJob = null;
+  state.dukascopyJob = null;   // pętla odcinków sprawdza ten znacznik między żądaniami
   showDukascopyProgress(false);
   setStatus('Pobieranie przerwane.');
+  if (jobId.startsWith('chunks-')) return;   // pobieranie odcinkami nie ma zadania na serwerze
   try {
     await callApi(`api/dukascopy/cancel/${jobId}`, { method: 'POST' });
   } catch {

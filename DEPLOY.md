@@ -14,14 +14,15 @@ klikniesz „Deploy":
 
 | | Lokalnie | Na Vercelu |
 |---|---|---|
-| **Pobieranie z Dukascopy** | Bez limitu, biegnie w tle, pasek postępu na żywo | Najwyżej ~70 dni na jedno pobranie, bez paska postępu |
+| **Pobieranie z Dukascopy** | Bez limitu, jedno zadanie w tle, pasek postępu co plik | Dowolny zakres, ale pobierany odcinkami po ~70 dni; postęp liczony w odcinkach |
 | **Wgrywanie plików CSV** | Do 64 MB | Do 4 MB **po kompresji** (≈ 20 MB CSV, czyli kilkanaście lat świec 15-minutowych) |
 | **Pamięć między żądaniami** | Trwała, dopóki serwer działa | Ulotna — aplikacja sama wysyła dane ponownie, gdy trafi na świeżą instancję |
 
 Żadna z tych różnic nie wymaga od Ciebie niczego w trakcie pracy — aplikacja radzi sobie
-z nimi sama. **Jeśli zamierzasz testować wieloletnią historię prosto z Dukascopy, wygodniej
-będzie uruchomić aplikację lokalnie** (`./run.sh`) i ewentualnie wgrać gotowy plik CSV do
-wersji w chmurze.
+z nimi sama. Możesz spokojnie wybrać kilka lat historii: przeglądarka podzieli zakres na
+odcinki, pobierze je jeden po drugim i skoro tylko skompletuje całość, wyśle ją na serwer
+jako jeden plik. Potrwa to proporcjonalnie dłużej niż lokalnie, a przerwać można między
+odcinkami.
 
 ---
 
@@ -117,9 +118,15 @@ i czy w ustawieniach projektu *Output Directory* jest puste.
 **`ModuleNotFoundError: No module named 'app'`.** Katalog `app/` nie został wdrożony — upewnij
 się, że nie dopisałeś go do `.vercelignore` i że jest śledzony przez gita (`git ls-files app/`).
 
-**Pobieranie z Dukascopy kończy się błędem limitu czasu.** Skróć zakres dat. Limit jest liczony
-z zapasem, ale przy wolnym łączu do archiwum bywa ciasny — podziel pobieranie na krótsze okresy
-albo zrób to lokalnie i wgraj gotowy plik.
+**Pobieranie z Dukascopy przerywa się na którymś odcinku.** Odcinki idą po kolei, więc błąd
+dotyczy jednego z nich — najczęściej to chwilowy problem z archiwum. Uruchom pobieranie
+ponownie: odcinki pobrane wcześniej siedzą w pamięci podręcznej instancji, więc powtórka
+zwykle jest znacznie szybsza. Jeśli błąd się powtarza, skróć zakres.
+
+**Komunikat, że scalony plik przekracza limit.** Zakres pobrał się w całości, ale komplet
+danych nie mieści się w limicie żądania. Wybierz rzadszy interwał (np. 15 minut zamiast
+1 minuty — to najskuteczniejsze) albo krótszy okres. Świece 1-minutowe są objętościowo
+mniej więcej piętnaście razy cięższe od 15-minutowych.
 
 **Wgranie pliku kończy się błędem „za duży".** Limit dotyczy rozmiaru **po kompresji**.
 Typowy CSV kurczy się około pięciokrotnie, więc 4 MB odpowiada mniej więcej 20 MB pliku

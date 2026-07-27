@@ -173,7 +173,7 @@ def test_dukascopy_range_is_capped_when_serverless(serverless_app):
     )
     assert response.status_code == 400
     detail = response.json()["detail"]
-    assert "lokalnie" in detail            # instrukcja, co zrobić zamiast tego
+    assert "odcinkami" in detail           # wskazówka, jak pobrać dłuższy zakres
     assert "1827" in detail                # ile dni faktycznie wybrano
 
 
@@ -203,6 +203,97 @@ def test_short_range_passes_the_check(serverless_app, monkeypatch):
     assert response.status_code == 200
     # wynik wraca od razu, bez odpytywania o postęp
     assert response.json()["state"] == "done"
+
+
+# --- pobieranie odcinkami ----------------------------------------------------------
+
+
+def fake_bars(start: str, count: int):
+    """Świece godzinowe od podanej daty — wystarczą, żeby sprawdzić sklejanie."""
+    from datetime import datetime, timedelta, timezone as tz
+
+    from app.csv_loader import Bar
+
+    first = datetime.fromisoformat(start).replace(tzinfo=tz.utc)
+    return [
+        Bar(ts=first + timedelta(hours=i), open=1.2, high=1.21, low=1.19, close=1.205, volume=0.0)
+        for i in range(count)
+    ]
+
+
+def test_chunk_returns_csv_with_a_header(serverless_app, monkeypatch):
+    module, client = serverless_app
+    monkeypatch.setattr(module, "download_bars", lambda **kw: fake_bars("2024-01-01", 3))
+
+    response = client.post(
+        "/api/dukascopy/chunk", json={"date_from": "2024-01-01", "date_to": "2024-01-02"}
+    )
+    assert response.status_code == 200
+    assert response.json()["bars"] == 3
+    assert response.json()["csv"].startswith("time,open,high,low,close")
+
+
+def test_chunk_can_skip_the_header_for_continuation(serverless_app, monkeypatch):
+    """Kolejne odcinki dokleja się do pierwszego, więc nagłówek może być tylko jeden."""
+    module, client = serverless_app
+    monkeypatch.setattr(module, "download_bars", lambda **kw: fake_bars("2024-01-03", 3))
+
+    body = {"date_from": "2024-01-03", "date_to": "2024-01-04", "with_header": False}
+    csv_text = client.post("/api/dukascopy/chunk", json=body).json()["csv"]
+
+    assert not csv_text.startswith("time,")
+    assert csv_text.startswith("2024-01-03")
+    assert len(csv_text.strip().split("\n")) == 3
+
+
+def test_glued_chunks_parse_as_one_dataset(serverless_app, monkeypatch):
+    """Sedno pomysłu: odcinki sklejone w przeglądarce muszą dać poprawny plik."""
+    module, client = serverless_app
+    pieces = []
+    for index, (start, day) in enumerate([("2024-01-01", "2024-01-01"), ("2024-01-02", "2024-01-02")]):
+        monkeypatch.setattr(module, "download_bars", lambda _s=start, **kw: fake_bars(_s, 24))
+        pieces.append(
+            client.post(
+                "/api/dukascopy/chunk",
+                json={"date_from": day, "date_to": day, "with_header": index == 0},
+            ).json()["csv"]
+        )
+
+    merged = "".join(pieces)
+    uploaded = client.post("/api/upload", files={"file": ("scalone.csv", merged, "text/csv")})
+
+    assert uploaded.status_code == 200
+    assert uploaded.json()["bars"] == 48          # oba odcinki, bez zgubionych wierszy
+    assert uploaded.json()["interval_minutes"] == 60
+
+
+def test_empty_chunk_glues_cleanly(serverless_app, monkeypatch):
+    """Weekend nie ma notowań — pusty odcinek nie może popsuć sklejenia."""
+    module, client = serverless_app
+    monkeypatch.setattr(module, "download_bars", lambda **kw: [])
+
+    csv_text = client.post(
+        "/api/dukascopy/chunk",
+        json={"date_from": "2024-01-06", "date_to": "2024-01-07", "with_header": False},
+    ).json()["csv"]
+    assert csv_text == ""
+
+
+def test_chunk_longer_than_the_budget_is_rejected(serverless_app):
+    _, client = serverless_app
+    response = client.post(
+        "/api/dukascopy/chunk", json={"date_from": "2020-01-01", "date_to": "2024-12-31"}
+    )
+    assert response.status_code == 400
+    assert "odcinek" in response.json()["detail"].lower()
+
+
+def test_chunk_validates_the_date_order(serverless_app):
+    _, client = serverless_app
+    response = client.post(
+        "/api/dukascopy/chunk", json={"date_from": "2024-03-01", "date_to": "2024-02-01"}
+    )
+    assert response.status_code == 400
 
 
 # --- informacja dla frontu ---------------------------------------------------------
