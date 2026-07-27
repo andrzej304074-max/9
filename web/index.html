@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backtester GBP/USD — świeca 8:00–8:15</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📈</text></svg>">
+</head>
+<body>
+
+<header class="masthead">
+  <div>
+    <h1>Backtester GBP/USD</h1>
+    <p class="masthead-sub">Świeca sesyjna 8:00–8:15 · zielona → long, czerwona → short · take profit 4× stop loss</p>
+  </div>
+  <div class="masthead-data">
+    <span id="dataset-label" class="pill pill-idle">Brak danych</span>
+    <span id="dataset-detail" class="masthead-detail"></span>
+  </div>
+</header>
+
+<!-- PODSUMOWANIE — zawsze na samej górze -->
+<section class="summary" id="summary" aria-live="polite">
+  <p class="summary-empty" id="summary-empty">
+    Wczytaj dane (własny eksport CSV z TradingView albo dane demo), a wyniki pojawią się tutaj.
+  </p>
+  <div class="tiles" id="tiles" hidden></div>
+  <p class="notes" id="notes" hidden></p>
+</section>
+
+<div class="layout">
+
+  <!-- ============ PANEL USTAWIEŃ ============ -->
+  <aside class="panel">
+    <form id="config-form" autocomplete="off">
+
+      <fieldset class="group">
+        <legend>1 · Dane</legend>
+        <div class="field">
+          <label for="file-input">Plik CSV z TradingView</label>
+          <input type="file" id="file-input" accept=".csv,text/csv,text/plain">
+          <p class="hint">Na wykresie TradingView: menu „…” → <em>Eksportuj dane wykresu</em> → interwał 15 min.</p>
+        </div>
+        <div class="row">
+          <button type="button" class="btn btn-ghost" id="btn-sample">Dane demo</button>
+          <button type="button" class="btn btn-ghost" id="btn-fetch">Pobierz z sieci</button>
+        </div>
+        <div class="field">
+          <label for="timezone">Strefa czasowa wykresu</label>
+          <select id="timezone" name="timezone"></select>
+          <p class="hint">Godzina sygnału liczona jest w tej strefie. Ustaw ją tak, jak masz w TradingView.</p>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>2 · Świeca sygnałowa</legend>
+        <div class="row">
+          <div class="field">
+            <label for="signal_time">Początek świecy</label>
+            <input type="time" id="signal_time" value="08:00">
+          </div>
+          <div class="field">
+            <label for="candle_minutes">Długość (min)</label>
+            <input type="number" id="candle_minutes" name="candle_minutes" min="1" max="1440" step="1">
+          </div>
+        </div>
+        <div class="field">
+          <label for="direction_mode">Kierunek pozycji</label>
+          <select id="direction_mode" name="direction_mode"></select>
+          <p class="hint" id="direction-hint"></p>
+        </div>
+        <div class="field">
+          <label for="doji_mode">Gdy świeca bez zmiany (doji)</label>
+          <select id="doji_mode" name="doji_mode"></select>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>3 · Logika pozycji</legend>
+        <div class="field">
+          <label for="rr_ratio">Zysk do ryzyka (RR)</label>
+          <input type="number" id="rr_ratio" name="rr_ratio" min="0.1" step="any">
+          <p class="hint">4 = take profit czterokrotnie dalej niż stop loss.</p>
+        </div>
+        <div class="field">
+          <label for="entry_mode">Moment wejścia</label>
+          <select id="entry_mode" name="entry_mode"></select>
+        </div>
+        <div class="field">
+          <label for="sl_method">Skąd brać dystans stop lossa</label>
+          <select id="sl_method" name="sl_method"></select>
+        </div>
+        <div class="row">
+          <div class="field" data-when-sl="fixed_pips">
+            <label for="sl_pips">Stop loss (pipsy)</label>
+            <input type="number" id="sl_pips" name="sl_pips" min="0.1" step="any">
+          </div>
+          <div class="field" data-when-sl="percent">
+            <label for="sl_percent">Stop loss (% ceny)</label>
+            <input type="number" id="sl_percent" name="sl_percent" min="0.001" step="any">
+          </div>
+          <div class="field">
+            <label for="sl_multiplier">Mnożnik SL</label>
+            <input type="number" id="sl_multiplier" name="sl_multiplier" min="0.01" step="any">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="spread_pips">Spread (pipsy)</label>
+            <input type="number" id="spread_pips" name="spread_pips" min="0" step="any">
+          </div>
+          <div class="field">
+            <label for="pip_size">Rozmiar pipsa</label>
+            <input type="number" id="pip_size" name="pip_size" min="0.000001" step="any">
+          </div>
+        </div>
+        <div class="field">
+          <label for="tie_break">Gdy jedna świeca dotyka i SL, i TP</label>
+          <select id="tie_break" name="tie_break"></select>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>4 · Zarządzanie pozycją</legend>
+        <div class="field">
+          <label for="position_mode">Co, gdy pojawia się nowy sygnał</label>
+          <select id="position_mode" name="position_mode"></select>
+          <p class="hint" id="position-hint"></p>
+        </div>
+        <div class="row" data-when-position="close_at_time">
+          <div class="field">
+            <label for="close_time">Godzina zamknięcia</label>
+            <input type="time" id="close_time" value="22:00">
+          </div>
+          <div class="field">
+            <label for="close_after_days">Po ilu dniach</label>
+            <input type="number" id="close_after_days" name="close_after_days" min="0" step="1">
+            <p class="hint">0 = tego samego dnia.</p>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>5 · Kapitał i dźwignia</legend>
+        <div class="row">
+          <div class="field">
+            <label for="initial_capital">Kapitał początkowy</label>
+            <input type="number" id="initial_capital" name="initial_capital" min="1" step="any">
+          </div>
+          <div class="field">
+            <label for="leverage">Dźwignia (×)</label>
+            <input type="number" id="leverage" name="leverage" min="1" step="any">
+          </div>
+        </div>
+        <div class="field">
+          <label for="sizing_mode">Jak liczyć wielkość pozycji</label>
+          <select id="sizing_mode" name="sizing_mode"></select>
+          <p class="hint" id="sizing-hint"></p>
+        </div>
+        <div class="field" data-when-sizing="risk_percent">
+          <label for="risk_percent">Ryzyko na transakcję (% kapitału)</label>
+          <input type="number" id="risk_percent" name="risk_percent" min="0.01" max="100" step="any">
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>6 · Zakres testu</legend>
+        <div class="field">
+          <label for="lookback_days">Ile dni wstecz</label>
+          <input type="number" id="lookback_days" name="lookback_days" min="0" step="1">
+          <p class="hint">0 = cała dostępna historia. Liczone w dniach kalendarzowych od ostatniej świecy.</p>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="date_from">Data od</label>
+            <input type="date" id="date_from" name="date_from">
+          </div>
+          <div class="field">
+            <label for="date_to">Data do</label>
+            <input type="date" id="date_to" name="date_to">
+          </div>
+        </div>
+        <div class="field">
+          <span class="label">Dni tygodnia</span>
+          <div class="weekdays" id="weekdays"></div>
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary" id="btn-run">Uruchom backtest</button>
+        <button type="button" class="btn btn-ghost" id="btn-reset">Przywróć domyślne</button>
+      </div>
+      <p class="status" id="status" role="status"></p>
+    </form>
+  </aside>
+
+  <!-- ============ WYNIKI ============ -->
+  <main class="results" id="results" hidden>
+
+    <figure class="card chart-card">
+      <figcaption>
+        <h2>Kumulatywna stopa zwrotu</h2>
+        <p class="card-sub">Narastająco od początku testu, w kolejności zamykania pozycji.</p>
+      </figcaption>
+      <div class="chart-wrap">
+        <canvas id="equity-chart" role="img"
+                aria-label="Wykres kumulatywnej stopy zwrotu w czasie"></canvas>
+        <div class="tooltip" id="chart-tooltip" hidden></div>
+      </div>
+    </figure>
+
+    <section class="card">
+      <h2>Wynik według dnia tygodnia</h2>
+      <p class="card-sub">Który dzień faktycznie zarabia, a który oddaje.</p>
+      <div class="table-scroll">
+        <table class="data-table" id="weekday-table">
+          <thead>
+            <tr>
+              <th scope="col">Dzień</th>
+              <th scope="col" class="num">Sygnały</th>
+              <th scope="col" class="num">Transakcje</th>
+              <th scope="col" class="num">Trafione</th>
+              <th scope="col" class="num">Skuteczność</th>
+              <th scope="col" class="num">Wynik</th>
+              <th scope="col" class="num">% kapitału</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>Wszystkie dni</h2>
+          <p class="card-sub">Kliknij nagłówek, aby posortować. Kolumna „narastająco” liczona jest w kolejności zamknięć.</p>
+        </div>
+        <div class="card-tools">
+          <label class="checkbox"><input type="checkbox" id="only-trades"> Tylko zagrane</label>
+          <button type="button" class="btn btn-ghost btn-small" id="btn-export">Eksport CSV</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table class="data-table" id="trades-table">
+          <thead>
+            <tr>
+              <th scope="col" data-sort="date">Data</th>
+              <th scope="col" data-sort="weekday">Dzień</th>
+              <th scope="col" data-sort="direction">Kierunek</th>
+              <th scope="col" class="num" data-sort="entry_price">Wejście</th>
+              <th scope="col" class="num" data-sort="stop_loss">Stop loss</th>
+              <th scope="col" class="num" data-sort="take_profit">Take profit</th>
+              <th scope="col" data-sort="exit_time">Wyjście</th>
+              <th scope="col" data-sort="exit_reason">Wynik</th>
+              <th scope="col" class="num" data-sort="pnl_money">Zysk / strata</th>
+              <th scope="col" class="num" data-sort="pnl_pct">%</th>
+              <th scope="col" class="num" data-sort="cumulative_return_pct">Narastająco</th>
+              <th scope="col" class="num" data-sort="hold_hours">Czas</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="table-empty" id="trades-empty" hidden>Brak dni spełniających kryteria.</p>
+    </section>
+
+    <p class="disclaimer">
+      Backtest jest uproszczeniem: nie uwzględnia punktów swapowych za trzymanie pozycji przez noc,
+      prowizji ani poślizgów. Spread naliczany jest raz, przy wejściu. Zakłada się, że zlecenie
+      wykonuje się dokładnie po cenie stop lossa lub take profitu. Wyniki historyczne nie są
+      obietnicą wyników przyszłych.
+    </p>
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

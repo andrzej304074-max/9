@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# pliki wgrane przez użytkownika w trakcie pracy z aplikacją
+data/uploads/
+
+.DS_Store
