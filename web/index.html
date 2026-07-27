@@ -47,6 +47,23 @@
           <button type="button" class="btn btn-ghost" id="btn-fetch">Pobierz z sieci</button>
         </div>
         <div class="field">
+          <label for="fetch_symbol">Symbol do pobrania z sieci</label>
+          <input type="text" id="fetch_symbol" value="GBPUSD=X" list="symbol-presets" spellcheck="false">
+          <datalist id="symbol-presets">
+            <option value="GBPUSD=X">GBP/USD</option>
+            <option value="EURUSD=X">EUR/USD</option>
+            <option value="USDJPY=X">USD/JPY</option>
+            <option value="AUDUSD=X">AUD/USD</option>
+            <option value="USDCHF=X">USD/CHF</option>
+            <option value="EURGBP=X">EUR/GBP</option>
+            <option value="GC=F">Złoto (kontrakt)</option>
+            <option value="^GSPC">S&amp;P 500</option>
+            <option value="BTC-USD">Bitcoin</option>
+          </datalist>
+          <p class="hint">Symbol w notacji Yahoo Finance. Dotyczy tylko przycisku „Pobierz z sieci” —
+            wgrany plik CSV działa dla dowolnego instrumentu.</p>
+        </div>
+        <div class="field">
           <label for="timezone">Strefa czasowa wykresu</label>
           <select id="timezone" name="timezone"></select>
           <p class="hint">Godzina sygnału liczona jest w tej strefie. Ustaw ją tak, jak masz w TradingView.</p>
@@ -235,7 +252,8 @@
       <div class="card-head">
         <div>
           <h2>Wszystkie dni</h2>
-          <p class="card-sub">Kliknij nagłówek, aby posortować. Kolumna „narastająco” liczona jest w kolejności zamknięć.</p>
+          <p class="card-sub">Kliknij nagłówek, aby posortować. Kolumna „narastająco” liczona jest w kolejności zamknięć.
+            Eksport CSV obejmuje wszystkie dni, nie tylko widoczną stronę.</p>
         </div>
         <div class="card-tools">
           <label class="checkbox"><input type="checkbox" id="only-trades"> Tylko zagrane</label>
@@ -264,6 +282,20 @@
         </table>
       </div>
       <p class="table-empty" id="trades-empty" hidden>Brak dni spełniających kryteria.</p>
+      <nav class="pager" id="pager" hidden>
+        <button type="button" class="btn btn-ghost btn-small" id="page-prev">← Poprzednie</button>
+        <span class="pager-info" id="page-info"></span>
+        <button type="button" class="btn btn-ghost btn-small" id="page-next">Następne →</button>
+        <label class="pager-size">
+          Wierszy na stronie
+          <select id="page-size">
+            <option value="100">100</option>
+            <option value="250" selected>250</option>
+            <option value="1000">1000</option>
+            <option value="0">wszystkie</option>
+          </select>
+        </label>
+      </nav>
     </section>
 
     <p class="disclaimer">

@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import BacktestConfig, ConfigError, options_payload
-from .csv_loader import DataError, LoadResult, bars_to_csv, load_bars
+from .csv_loader import DataError, LoadResult, bars_to_csv, load_bars, suggest_pip_size
 from .engine import run_backtest
 from .fetch import DEFAULT_SYMBOL, fetch_bars
 from .stats import build_response
@@ -99,6 +99,10 @@ def _dataset_payload(dataset_id: str, result: LoadResult, source: str, timezone_
         "rejected_rows": result.rejected_rows,
         "columns": result.source_columns,
         "timezone": timezone_name,
+        "suggested_pip_size": suggest_pip_size(result.bars),
+        "median_price": sorted(b.close for b in result.bars)[len(result.bars) // 2]
+        if result.bars
+        else None,
     }
 
 

@@ -41,9 +41,10 @@ wyeksportować ręcznie — za to są to dokładnie te kwotowania, które widzis
 3. Menu **„…"** w prawym górnym rogu → **Eksportuj dane wykresu** → format CSV.
 4. Wgraj pobrany plik w sekcji **1 · Dane**.
 
-Parser radzi sobie sam z wariantami formatu: separator `,` albo `;`, przecinek albo kropka
-dziesiętna, czas jako unix, ISO 8601 lub `DD.MM.RRRR GG:MM`. Wiersze niespójne
-(np. `high` poniżej `open`) są odrzucane, a ich liczba raportowana.
+Parser radzi sobie sam z wariantami formatu: separator `,`, `;` lub tabulator, przecinek albo
+kropka dziesiętna, czas jako unix (sekundy/milisekundy), ISO 8601, `DD.MM.RRRR GG:MM`,
+`RRRRMMDD GGMMSS` (HistData) oraz data i godzina w dwóch osobnych kolumnach (eksport z MT4/MT5).
+Wiersze niespójne (np. `high` poniżej `open`) są odrzucane, a ich liczba raportowana.
 
 **Ważne — strefa czasowa.** Jeśli plik nie zawiera informacji o strefie, godziny są
 interpretowane w strefie wybranej w polu „Strefa czasowa wykresu". Ustaw tam tę samą strefę,
@@ -57,6 +58,60 @@ rzut oka, ale to **inny dostawca kwotowań niż TradingView** — świece mogą 
 > Ta ścieżka nie została przetestowana w środowisku, w którym powstawał projekt, bo polityka
 > sieciowa blokowała tam zewnętrzne hosty. Kod obsługuje błąd czytelnym komunikatem, ale samo
 > pobieranie zadziała dopiero na maszynie z otwartym internetem.
+
+### Inne instrumenty niż GBP/USD
+
+Silnik nie wie i nie musi wiedzieć, jaki instrument liczy — przetwarza po prostu świece OHLC.
+Sprawdzone na EUR/USD, USD/JPY, EUR/GBP, złocie, indeksie i bitcoinie: wszystko liczy się
+tak samo. Trzy rzeczy warto ustawić świadomie:
+
+- **Rozmiar pipsa** dopasowuje się automatycznie po wczytaniu pliku (0,0001 dla par walutowych,
+  0,01 dla par z jenem, 0,1 dla złota i indeksów, 1 dla krypto). Możesz go nadpisać. Wpływa
+  wyłącznie na metodę „stałe pipsy" i na spread — przy stopie z zakresu świecy albo z procentu
+  ceny nie ma żadnego znaczenia.
+- **Dni tygodnia.** Krypto handluje się siedem dni w tygodniu, więc zaznacz sobotę i niedzielę
+  — inaczej stracisz jakieś 28% sygnałów.
+- **Waluta wyniku.** Zysk i strata wychodzą w **walucie kwotowanej**, czyli tej po prawej
+  stronie pary. Dla GBP/USD, EUR/USD czy XAU/USD jest to USD i przy koncie dolarowym wszystko
+  się zgadza. Ale przy **USD/JPY wynik jest w jenach**, a przy **EUR/GBP w funtach** — żeby
+  dostać kwotę w walucie konta, trzeba go jeszcze przeliczyć po kursie. Procenty i statystyki
+  (skuteczność, profit factor, obsunięcie) są poprawne niezależnie od pary.
+
+Przycisk „Pobierz z sieci" ma pole na symbol w notacji Yahoo Finance — `EURUSD=X`, `USDJPY=X`,
+`BTC-USD`, `^GSPC` i tak dalej. Wgrany plik CSV działa dla dowolnego instrumentu bez ograniczeń.
+
+### Długa historia — czy da się przetestować 10 lat wstecz
+
+Po stronie aplikacji tak, i to bez zadyszki. Zmierzone na 10 latach danych 15-minutowych
+(250 560 świec, plik 16 MB): wczytanie pliku 3,3 s, sam backtest 0,2–0,9 s zależnie od trybu,
+2 610 dni sygnałowych w tabeli. Limit wgrywanego pliku to 64 MB, więc miejsca jest z zapasem.
+Tabela wyników jest stronicowana, żeby sortowanie tysięcy wierszy pozostało natychmiastowe.
+
+Prawdziwym ograniczeniem jest **zdobycie takich danych**. TradingView eksportuje tylko to, co
+jest wczytane na wykresie, a ile świec da się wczytać, zależy od planu — na darmowym koncie
+zwykle kilka tysięcy, na płatnych więcej, ale i tak znacznie mniej niż ćwierć miliona świec
+potrzebnych na 10 lat interwału 15-minutowego. Przycisk „Pobierz z sieci" odpada tym bardziej:
+Yahoo oddaje dla 15 minut najwyżej około 60 dni.
+
+Na naprawdę długą historię sięgnij po źródło, które daje pełne archiwum:
+
+| Źródło | Co daje | Format |
+|---|---|---|
+| **HistData.com** | Darmowe dane 1-minutowe dla par walutowych, miesiąc po miesiącu, wstecz do ~2000 roku | `RRRRMMDD GGMMSS;O;H;L;C;V` — obsługiwany |
+| **Eksport z MT4/MT5** | Historia od Twojego brokera (Narzędzia → Centrum historii) | data i godzina w osobnych kolumnach — obsługiwany |
+| **Dukascopy** | Darmowe dane tickowe i minutowe z długim archiwum | po konwersji do CSV z kolumnami OHLC |
+
+Dane 1-minutowe są tu nawet **lepsze niż 15-minutowe**: aplikacja sama złoży z nich świecę
+sygnałową 8:00–8:15, a drobniejszych świec użyje do symulacji wyjść, więc dokładniej wiadomo,
+czy pierwszy został trafiony stop loss czy take profit. Kosztem jest rozmiar pliku — 10 lat
+danych 1-minutowych to około 3,7 mln świec i grubo ponad 200 MB, czyli powyżej limitu; w takim
+wypadku wgrywaj krótsze okresy albo przekonwertuj dane do 5 lub 15 minut.
+
+Jeszcze jedna uwaga o długiej historii: im dalej wstecz, tym mniej wynik mówi o dzisiejszym
+rynku. Kurs GBP/USD chodził w 2016 roku w zupełnie innym reżimie zmienności niż teraz, a spread
+i koszty finansowania też były inne. Warto porównać wynik z ostatnich 2–3 lat z wynikiem
+z całej dostępnej historii — jeśli mocno się różnią, to sygnał, że strategia zależy od reżimu,
+a nie od trwałej przewagi.
 
 ### Dane demo
 

@@ -11,6 +11,8 @@ const state = {
   result: null,
   sort: { key: 'date', dir: 'asc' },
   chart: null,
+  page: 0,
+  pageSize: 250,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -20,9 +22,17 @@ const nf = (min, max) => new Intl.NumberFormat('pl-PL', {
   maximumFractionDigits: max === undefined ? min : max,
 });
 const fmtMoney = nf(2);
-const fmtPrice = nf(5);
 const fmtPct2 = nf(2);
 const fmtNum1 = nf(1);
+
+// liczba miejsc po przecinku zależy od instrumentu: 1,27890 dla pary walutowej,
+// ale 95 000,00 dla bitcoina — pięć miejsc byłoby tam tylko szumem
+let fmtPrice = nf(5);
+
+function setPriceFormat(medianPrice) {
+  const decimals = !medianPrice || medianPrice < 20 ? 5 : (medianPrice < 1000 ? 3 : 2);
+  fmtPrice = nf(decimals);
+}
 
 function signed(value, formatter, suffix = '') {
   if (value === null || value === undefined || Number.isNaN(value)) return '—';
@@ -114,7 +124,15 @@ function wireEvents() {
   $('btn-fetch').addEventListener('click', fetchFromNetwork);
   $('file-input').addEventListener('change', uploadFile);
   $('btn-export').addEventListener('click', exportCsv);
-  $('only-trades').addEventListener('change', renderTradesTable);
+  $('only-trades').addEventListener('change', () => { state.page = 0; renderTradesTable(); });
+
+  $('page-prev').addEventListener('click', () => { state.page -= 1; renderTradesTable(); });
+  $('page-next').addEventListener('click', () => { state.page += 1; renderTradesTable(); });
+  $('page-size').addEventListener('change', (event) => {
+    state.pageSize = Number(event.target.value);
+    state.page = 0;
+    renderTradesTable();
+  });
 
   ['sl_method', 'position_mode', 'sizing_mode', 'direction_mode'].forEach((id) => {
     $(id).addEventListener('change', syncConditionalFields);
@@ -127,6 +145,7 @@ function wireEvents() {
         key,
         dir: state.sort.key === key && state.sort.dir === 'asc' ? 'desc' : 'asc',
       };
+      state.page = 0;
       renderTradesTable();
     });
   });
@@ -271,7 +290,17 @@ function onDatasetLoaded(data) {
     `${data.bars.toLocaleString('pl-PL')} świec · ${data.first_date} → ${data.last_date}` +
     (data.interval_minutes ? ` · interwał ${data.interval_minutes} min` : '');
 
-  const warnings = data.warnings || [];
+  setPriceFormat(data.median_price);
+
+  // rozmiar pipsa zależy od instrumentu — dopasuj go, jeśli podpowiedź się nie zgadza
+  const warnings = [...(data.warnings || [])];
+  const suggested = data.suggested_pip_size;
+  if (suggested && Math.abs(num('pip_size', 0.0001) - suggested) > suggested * 1e-6) {
+    $('pip_size').value = suggested;
+    warnings.push(`Rozmiar pipsa ustawiono na ${suggested} — dopasowany do poziomu cen tego ` +
+      'instrumentu. Możesz go zmienić; wpływa tylko na metodę „stałe pipsy” i spread.');
+  }
+
   setStatus(
     warnings.length ? warnings.join('\n') : 'Dane wczytane. Możesz uruchomić backtest.',
     warnings.length ? '' : 'ok',
@@ -302,7 +331,10 @@ async function fetchFromNetwork() {
     onDatasetLoaded(await callApi('api/fetch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ timezone: $('timezone').value }),
+      body: JSON.stringify({
+        timezone: $('timezone').value,
+        symbol: $('fetch_symbol').value.trim() || 'GBPUSD=X',
+      }),
     }));
   });
 }
@@ -678,8 +710,25 @@ function renderTradesTable() {
     }
   });
 
-  const rows = visibleTrades();
-  $('trades-empty').hidden = rows.length > 0;
+  const allRows = visibleTrades();
+  $('trades-empty').hidden = allRows.length > 0;
+
+  // Przy wieloletniej historii tabela ma tysiące wierszy — rysowanie ich wszystkich naraz
+  // zamraża przeglądarkę na kilka sekund przy każdym sortowaniu, więc dzielimy je na strony.
+  const size = state.pageSize > 0 ? state.pageSize : allRows.length;
+  const pageCount = Math.max(1, Math.ceil(allRows.length / (size || 1)));
+  state.page = Math.min(Math.max(0, state.page), pageCount - 1);
+  const start = state.page * size;
+  const rows = allRows.slice(start, start + size);
+
+  const pager = $('pager');
+  pager.hidden = allRows.length === 0;
+  $('page-prev').disabled = state.page === 0;
+  $('page-next').disabled = state.page >= pageCount - 1;
+  $('page-info').textContent = allRows.length
+    ? `${start + 1}–${start + rows.length} z ${allRows.length.toLocaleString('pl-PL')} dni` +
+      (pageCount > 1 ? ` · strona ${state.page + 1} z ${pageCount}` : '')
+    : '';
 
   $('trades-table').querySelector('tbody').innerHTML = rows.map((t) => {
     const played = t.status === 'closed' || t.status === 'open';

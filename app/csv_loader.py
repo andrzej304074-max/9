@@ -52,6 +52,11 @@ class LoadResult:
 # --- nagłówki kolumn ---------------------------------------------------------------
 
 _TIME_KEYS = ("time", "date", "datetime", "date_time", "timestamp", "czas", "data")
+
+# Część źródeł (eksport z MT4/MT5, niektóre pliki HistData) trzyma datę i godzinę
+# w dwóch osobnych kolumnach — trzeba je wtedy skleić przed parsowaniem.
+_DATE_ONLY_KEYS = ("date", "data", "dzien", "day")
+_TIME_ONLY_KEYS = ("time", "czas", "godzina", "hour")
 _OPEN_KEYS = ("open", "o", "otwarcie")
 _HIGH_KEYS = ("high", "h", "max", "najwyzszy")
 _LOW_KEYS = ("low", "l", "min", "najnizszy")
@@ -59,6 +64,7 @@ _CLOSE_KEYS = ("close", "c", "last", "zamkniecie")
 _VOLUME_KEYS = ("volume", "vol", "v", "wolumen")
 
 _UNIX_RE = re.compile(r"^-?\d{9,14}$")
+_TIME_ONLY_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
 
 _DATETIME_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
@@ -74,7 +80,12 @@ _DATETIME_FORMATS = (
     "%m/%d/%Y %H:%M:%S",
     "%m/%d/%Y %H:%M",
     "%d-%m-%Y %H:%M",
+    "%Y.%m.%d %H:%M:%S",   # eksport z MT4/MT5
+    "%Y.%m.%d %H:%M",
+    "%Y.%m.%d",
     "%Y%m%d %H:%M:%S",
+    "%Y%m%d %H%M%S",       # HistData (M1 ASCII)
+    "%Y%m%d%H%M%S",
     "%Y%m%d",
 )
 
@@ -166,6 +177,26 @@ def parse_timestamp(raw: str, tz: ZoneInfo) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def suggest_pip_size(bars: list[Bar]) -> float:
+    """Proponuje rozmiar pipsa na podstawie rzędu wielkości ceny.
+
+    Konwencje różnią się między instrumentami: para walutowa kwotowana w okolicach 1,27 ma
+    pipsa 0,0001, para z jenem przy 157 — 0,01, a indeks czy krypto liczy się w pełnych
+    punktach. To tylko podpowiedź — użytkownik może ją nadpisać, a poza metodą „stałe pipsy”
+    i spreadem rozmiar pipsa i tak nie wpływa na wynik.
+    """
+    if not bars:
+        return 0.0001
+    middle = sorted(bar.close for bar in bars)[len(bars) // 2]
+    if middle < 20:
+        return 0.0001
+    if middle < 1000:
+        return 0.01
+    if middle < 20000:
+        return 0.1
+    return 1.0
+
+
 def _detect_interval(bars: list[Bar]) -> Optional[int]:
     if len(bars) < 3:
         return None
@@ -201,8 +232,15 @@ def load_bars(text: str, timezone_name: str = "Europe/London") -> LoadResult:
     header = rows[0]
     has_header = any(_normalise_key(cell) in _TIME_KEYS for cell in header)
 
+    idx_date_part: Optional[int] = None
+
     if has_header:
         idx_time = _find_column(header, _TIME_KEYS)
+        # data i godzina w osobnych kolumnach (typowe dla eksportu z MT4/MT5)
+        idx_date_only = _find_column(header, _DATE_ONLY_KEYS)
+        idx_time_only = _find_column(header, _TIME_ONLY_KEYS)
+        if idx_date_only is not None and idx_time_only is not None and idx_date_only != idx_time_only:
+            idx_date_part, idx_time = idx_date_only, idx_time_only
         idx_open = _find_column(header, _OPEN_KEYS)
         idx_high = _find_column(header, _HIGH_KEYS)
         idx_low = _find_column(header, _LOW_KEYS)
@@ -217,13 +255,24 @@ def load_bars(text: str, timezone_name: str = "Europe/London") -> LoadResult:
                 "Nie znaleziono nagłówka ani 5 kolumn (czas, open, high, low, close). "
                 "Wyeksportuj dane z TradingView przez 'Eksportuj dane wykresu'."
             )
-        idx_time, idx_open, idx_high, idx_low, idx_close = 0, 1, 2, 3, 4
-        idx_volume = 5 if len(header) > 5 else None
         data_rows = rows
         source_columns = ["(bez nagłówka)"]
-        warnings.append(
-            "Plik nie ma nagłówka — przyjęto kolejność kolumn: czas, open, high, low, close."
-        )
+
+        # eksport z MT4/MT5 bez nagłówka trzyma datę i godzinę w dwóch pierwszych kolumnach
+        split_datetime = len(header) >= 6 and _TIME_ONLY_RE.match(header[1].strip())
+        if split_datetime:
+            idx_date_part, idx_time = 0, 1
+            idx_open, idx_high, idx_low, idx_close = 2, 3, 4, 5
+            idx_volume = 6 if len(header) > 6 else None
+            warnings.append(
+                "Plik nie ma nagłówka — przyjęto kolejność: data, godzina, open, high, low, close."
+            )
+        else:
+            idx_time, idx_open, idx_high, idx_low, idx_close = 0, 1, 2, 3, 4
+            idx_volume = 5 if len(header) > 5 else None
+            warnings.append(
+                "Plik nie ma nagłówka — przyjęto kolejność kolumn: czas, open, high, low, close."
+            )
 
     missing = [
         name
@@ -242,7 +291,14 @@ def load_bars(text: str, timezone_name: str = "Europe/London") -> LoadResult:
             f"Znalezione kolumny: {', '.join(source_columns)}."
         )
 
-    max_idx = max(i for i in (idx_time, idx_open, idx_high, idx_low, idx_close) if i is not None)
+    if idx_date_part is not None:
+        source_columns = source_columns + ["(data i godzina w osobnych kolumnach)"]
+
+    max_idx = max(
+        i
+        for i in (idx_time, idx_date_part, idx_open, idx_high, idx_low, idx_close)
+        if i is not None
+    )
 
     seen: dict[datetime, Bar] = {}
     rejected = 0
@@ -254,8 +310,12 @@ def load_bars(text: str, timezone_name: str = "Europe/London") -> LoadResult:
             if len(first_errors) < 3:
                 first_errors.append(f"wiersz {line_no}: za mało kolumn")
             continue
+        raw_time = row[idx_time]
+        if idx_date_part is not None:
+            raw_time = f"{row[idx_date_part].strip()} {raw_time.strip()}"
+
         try:
-            ts = parse_timestamp(row[idx_time], tz)
+            ts = parse_timestamp(raw_time, tz)
             o = parse_number(row[idx_open])
             h = parse_number(row[idx_high])
             lo = parse_number(row[idx_low])

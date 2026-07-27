@@ -145,6 +145,76 @@ def test_non_15m_interval_produces_warning():
     assert any("60 min" in w for w in result.warnings)
 
 
+def test_histdata_format():
+    """HistData (M1 ASCII): średnik, brak nagłówka, czas jako RRRRMMDD GGMMSS."""
+    text = (
+        "20240102 080000;1.27000;1.27200;1.26900;1.27100;0\n"
+        "20240102 081500;1.27100;1.27300;1.27000;1.27250;0\n"
+        "20240102 083000;1.27250;1.27400;1.27150;1.27350;0\n"
+    )
+    result = load_bars(text, "UTC")
+    assert len(result.bars) == 3
+    assert result.bars[0].ts == utc("2024-01-02 08:00:00")
+    assert result.bars[0].close == pytest.approx(1.27100)
+
+
+def test_mt4_export_with_separate_date_and_time_columns():
+    """Eksport z MT4/MT5: data i godzina w dwóch osobnych kolumnach, kropki w dacie."""
+    text = (
+        "2024.01.02,08:00,1.27000,1.27200,1.26900,1.27100,120\n"
+        "2024.01.02,08:15,1.27100,1.27300,1.27000,1.27250,130\n"
+        "2024.01.02,08:30,1.27250,1.27400,1.27150,1.27350,140\n"
+    )
+    result = load_bars(text, "UTC")
+    assert len(result.bars) == 3
+    assert result.bars[0].ts == utc("2024-01-02 08:00:00")
+    assert result.bars[1].high == pytest.approx(1.27300)
+
+
+def test_mt5_header_with_separate_date_and_time_columns():
+    """MT5 eksportuje z nagłówkami w nawiasach ostrokątnych i tabulatorem."""
+    text = (
+        "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\n"
+        "2024.01.02\t08:00:00\t1.27000\t1.27200\t1.26900\t1.27100\t120\n"
+        "2024.01.02\t08:15:00\t1.27100\t1.27300\t1.27000\t1.27250\t130\n"
+    )
+    result = load_bars(text, "UTC")
+    assert len(result.bars) == 2
+    assert result.bars[0].ts == utc("2024-01-02 08:00:00")
+
+
+def test_single_time_column_is_not_mistaken_for_split_columns():
+    """Zwykły eksport z TradingView ma jedną kolumnę czasu — nie wolno jej rozbić."""
+    text = (
+        "time,open,high,low,close\n"
+        "2024-01-02T08:00:00Z,1.2700,1.2720,1.2690,1.2710\n"
+        "2024-01-02T08:15:00Z,1.2710,1.2730,1.2700,1.2725\n"
+    )
+    result = load_bars(text)
+    assert result.bars[0].ts == utc("2024-01-02 08:00:00")
+    assert result.bars[0].open == pytest.approx(1.2700)
+
+
+@pytest.mark.parametrize(
+    "prices,expected_pip",
+    [
+        ([1.2700, 1.2800], 0.0001),   # para walutowa
+        ([157.20, 157.80], 0.01),     # para z jenem
+        ([2650.0, 2660.0], 0.1),      # złoto
+        ([95000.0, 96000.0], 1.0),    # bitcoin
+    ],
+)
+def test_suggested_pip_size_follows_price_scale(prices, expected_pip):
+    from app.csv_loader import suggest_pip_size
+
+    rows = "".join(
+        f"2024-01-02T0{8 + i}:00:00Z,{p},{p * 1.001},{p * 0.999},{p}\n"
+        for i, p in enumerate(prices)
+    )
+    bars = load_bars("time,open,high,low,close\n" + rows).bars
+    assert suggest_pip_size(bars) == expected_pip
+
+
 def test_empty_file_raises():
     with pytest.raises(DataError):
         load_bars("")

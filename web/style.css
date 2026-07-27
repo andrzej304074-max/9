@@ -313,6 +313,19 @@ canvas { width: 100%; height: 100%; display: block; }
 
 .table-empty { margin: 14px 0 0; color: var(--muted); font-size: 0.85rem; }
 
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--grid);
+}
+.pager-info { color: var(--ink-2); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.pager-size { display: flex; align-items: center; gap: 6px; margin: 0 0 0 auto; color: var(--muted); font-size: 0.78rem; }
+.pager-size select { width: auto; padding: 4px 6px; font-size: 0.78rem; }
+
 .disclaimer {
   margin: 0;
   padding: 0 4px;
