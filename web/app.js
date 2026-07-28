@@ -19,9 +19,12 @@ const state = {
   page: 0,
   pageSize: 250,
   dukascopyJob: null,
+  fetchIntervals: {},
+  fetchHistoryDays: {},
+  intervalChoice: { yahoo: '15m', dukascopy: '15' },
   // skąd wzięły się bieżące dane — pozwala odtworzyć je po utracie stanu na serwerze
   source: null,
-  runtime: { serverless: false, dukascopy_max_days: 0 },
+  runtime: { serverless: false },
   strategy: 'candle_direction',
   // każda strategia trzyma własny komplet ustawień, żeby przełączanie nic nie gubiło
   saved: {},
@@ -82,16 +85,15 @@ async function init() {
     fillSelect($('timezone'), Object.fromEntries(data.timezones.map((t) => [t, t])));
     Object.entries(data.options).forEach(([key, values]) => fillSelect($(key), values));
     fillSelect($('duka_instrument'), data.dukascopy_instruments || {});
-    fillSelect($('fetch_interval'), data.fetch_intervals || {});
-    $('fetch_interval').value = '15m';
+    state.fetchIntervals = data.fetch_intervals || {};
     state.fetchHistoryDays = data.fetch_history_days || {};
-    syncFetchHint();
+    state.intervalChoice = { yahoo: '15m', dukascopy: '15' };
+    syncFetchSource();
     state.runtime = data.runtime || state.runtime;
     applyRuntimeLimits();
     state.saved = loadStoredConfigs();
     state.strategy = state.saved.__active || 'candle_direction';
     applyConfig(configFor(state.strategy));
-    setDefaultDukascopyRange();
   } catch (err) {
     setStatus('Nie udało się pobrać ustawień z serwera: ' + err.message, 'error');
     return;
@@ -146,7 +148,7 @@ function wireEvents() {
   });
   $('btn-sample').addEventListener('click', loadSample);
   $('btn-fetch').addEventListener('click', fetchFromNetwork);
-  $('btn-duka').addEventListener('click', startDukascopy);
+  $('fetch_source').addEventListener('change', syncFetchSource);
   $('btn-duka-cancel').addEventListener('click', cancelDukascopy);
   $('btn-duka-probe').addEventListener('click', probeDukascopy);
   $('file-input').addEventListener('change', uploadFile);
@@ -529,7 +531,45 @@ async function loadSample() {
   });
 }
 
+// Dukascopy składa świece z ticków, więc interwał podaje się w minutach i nie ma tu
+// żadnego sufitu historii poza początkiem archiwum.
+const DUKASCOPY_INTERVALS = {
+  1: '1 minuta — najdokładniej, największy plik',
+  5: '5 minut',
+  15: '15 minut',
+  30: '30 minut',
+  60: '1 godzina',
+};
+const YAHOO_MINUTES = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '60m': 60, '1h': 60, '1d': 1440 };
+
+function fetchSource() {
+  return $('fetch_source').value;
+}
+
+/** Długość świecy wybranego interwału w minutach — wspólna miara dla obu źródeł. */
+function selectedIntervalMinutes() {
+  const value = $('fetch_interval').value;
+  return fetchSource() === 'dukascopy' ? Number(value) : YAHOO_MINUTES[value];
+}
+
+/** Przełącza pola i listę interwałów pod wybrane źródło, pamiętając wybór dla każdego. */
+function syncFetchSource() {
+  const source = fetchSource();
+  document.querySelectorAll('[data-source]').forEach((el) => {
+    el.hidden = el.dataset.source !== source;
+  });
+
+  const select = $('fetch_interval');
+  const wanted = state.intervalChoice[source];
+  fillSelect(select, source === 'dukascopy' ? DUKASCOPY_INTERVALS : (state.fetchIntervals || {}));
+  if (wanted && select.querySelector(`option[value="${wanted}"]`)) select.value = wanted;
+
+  syncFetchHint();
+}
+
 async function fetchFromNetwork() {
+  if (fetchSource() === 'dukascopy') return startDukascopy();
+
   const days = Math.max(1, num('fetch_days', 60));
   await withBusy('btn-fetch', `Pobieram ${days} dni oknami wstecz…`, async () => {
     state.source = { kind: 'fetch' };
@@ -546,20 +586,18 @@ async function fetchFromNetwork() {
   });
 }
 
-/** Mówi wprost, ile historii da się dostać przy wybranym interwale — zanim ktoś kliknie. */
+/** Mówi wprost, czego się spodziewać po wybranym źródle i interwale — zanim ktoś kliknie. */
 function syncFetchHint() {
-  const interval = $('fetch_interval').value;
-  const depth = (state.fetchHistoryDays || {})[interval];
-  const wanted = num('fetch_days', 60);
   const hint = $('fetch-hint');
-  if (!depth) { hint.textContent = ''; return; }
-
+  const source = fetchSource();
+  const wanted = num('fetch_days', 60);
   const candle = num('candle_minutes', 15);
-  const dataMinutes = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '60m': 60, '1h': 60, '1d': 1440 }[interval];
+  const dataMinutes = selectedIntervalMinutes();
+  state.intervalChoice[source] = $('fetch_interval').value;
 
   // Świeca sygnałowa nie powstanie z danych rzadszych, niż sama trwa — to najczęstsza
   // przyczyna backtestu bez ani jednej transakcji.
-  if (dataMinutes > candle) {
+  if (dataMinutes && dataMinutes > candle) {
     hint.textContent = `Uwaga: świeca sygnałowa trwa ${candle} min, a te dane mają rozdzielczość `
       + `${dataMinutes} min — nie da się z nich złożyć sygnału i backtest nie znajdzie ani jednej `
       + `pozycji. Wybierz interwał ${candle} min lub gęstszy, albo zmień długość świecy w sekcji 2.`;
@@ -567,15 +605,26 @@ function syncFetchHint() {
     return;
   }
 
-  const human = depth >= 10000 ? 'pełną dostępną historię' : (depth >= 365
-    ? `${Math.round(depth / 365)} lat` : `${depth} dni`);
+  if (source === 'dukascopy') {
+    hint.textContent = `Archiwum sięga 2003 roku, więc ${wanted} dni pobierze się w całości. `
+      + 'Idzie plik po pliku, jeden na godzinę handlu — miesiąc to kilkanaście sekund, '
+      + 'rok kilka minut. Powtórka tego samego okresu jest natychmiastowa.';
+    hint.classList.remove('hint-limit');
+    return;
+  }
+
+  const depth = (state.fetchHistoryDays || {})[$('fetch_interval').value];
+  if (!depth) { hint.textContent = ''; return; }
+  const human = depth >= 10000 ? 'pełną dostępną historię'
+    : (depth >= 365 ? `${Math.round(depth / 365)} lat` : `${depth} dni`);
+
   if (wanted > depth) {
     hint.textContent = `Yahoo trzyma dla tego interwału tylko ${human} historii, a poproszono `
-      + `o ${wanted} dni — pobierze się tyle, ile jest. Po głębszą historię minutową użyj `
-      + `Dukascopy poniżej (sięga 2003 roku) albo wgraj plik z TradingView.`;
+      + `o ${wanted} dni — pobierze się tyle, ile jest. Po głębszą historię przełącz źródło `
+      + `na Dukascopy albo wgraj plik z TradingView.`;
     hint.classList.add('hint-limit');
   } else {
-    hint.textContent = `Pobieranie idzie oknami wstecz, aż uzbiera cały okres. `
+    hint.textContent = 'Pobieranie idzie oknami wstecz, aż uzbiera cały okres. '
       + `Dla tego interwału Yahoo udostępnia ${human}.`;
     hint.classList.remove('hint-limit');
   }
@@ -583,16 +632,8 @@ function syncFetchHint() {
 
 /** Dostosowuje podpowiedzi do ograniczeń środowiska, w którym aplikacja została wdrożona. */
 function applyRuntimeLimits() {
-  const { serverless, dukascopy_max_days: maxDays, max_upload_bytes: maxUpload } = state.runtime;
+  const { serverless, max_upload_bytes: maxUpload } = state.runtime;
   if (!serverless) return;
-
-  const hint = $('duka-hint');
-  if (hint) {
-    hint.textContent = 'Ta instancja działa bezserwerowo, więc jedno żądanie ma limit czasu. '
-      + 'Pobieranie samo dzieli się na części: serwer bierze tyle dni, ile zdąży, a przeglądarka '
-      + 'wznawia od miejsca, w którym przerwał — aż do końca zakresu. Możesz spokojnie wybrać '
-      + 'kilka lat, potrwa to tylko odpowiednio dłużej. Przerwać można między częściami.';
-  }
 
   const uploadHint = $('upload-hint');
   if (uploadHint && maxUpload) {
@@ -603,37 +644,35 @@ function applyRuntimeLimits() {
   }
 }
 
-/* ---------------- Dukascopy: pełne archiwum, pobierane w tle ---------------- */
-
-function setDefaultDukascopyRange() {
-  const end = new Date();
-  end.setDate(end.getDate() - 1);
-  const start = new Date(end);
-  start.setMonth(start.getMonth() - 3);
-  const iso = (d) => d.toISOString().slice(0, 10);
-  $('duka_to').value = iso(end);
-  $('duka_to').max = iso(end);
-  $('duka_from').value = iso(start);
-  $('duka_from').max = iso(end);
-}
+/* ---------------- Dukascopy: pełne archiwum od 2003 roku ---------------- */
 
 function showDukascopyProgress(visible) {
   $('duka-progress').hidden = !visible;
-  $('btn-duka').disabled = visible;
+  $('btn-fetch').disabled = visible;
+}
+
+/** Zamienia „ile dni wstecz" na zakres dat, którego oczekuje archiwum. */
+function daysBackToRange(days) {
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const end = new Date();
+  end.setUTCDate(end.getUTCDate() - 1);          // wczoraj — dzisiejsze godziny bywają niegotowe
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+
+  const archiveStart = new Date('2003-01-01T00:00:00Z');
+  return { from: iso(start < archiveStart ? archiveStart : start), to: iso(end) };
 }
 
 async function startDukascopy() {
+  const days = Math.max(1, num('fetch_days', 60));
+  const range = daysBackToRange(days);
   const body = {
     instrument: $('duka_instrument').value,
-    date_from: $('duka_from').value,
-    date_to: $('duka_to').value,
-    interval_minutes: Number($('duka_interval').value),
+    date_from: range.from,
+    date_to: range.to,
+    interval_minutes: selectedIntervalMinutes(),
     timezone: $('timezone').value,
   };
-  if (!body.date_from || !body.date_to) {
-    setStatus('Podaj zakres dat do pobrania z Dukascopy.', 'error');
-    return;
-  }
 
   showDukascopyProgress(true);
   $('duka-fill').style.width = '0%';

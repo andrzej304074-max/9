@@ -55,9 +55,16 @@
           <button type="button" class="btn btn-ghost" id="btn-sample">Dane demo</button>
           <button type="button" class="btn btn-ghost" id="btn-fetch">Pobierz z sieci</button>
         </div>
+        <div class="field">
+          <label for="fetch_source">Skąd pobierać</label>
+          <select id="fetch_source">
+            <option value="yahoo">Yahoo Finance — szybko, ale płytkie archiwum</option>
+            <option value="dukascopy">Dukascopy — pełne archiwum od 2003 roku</option>
+          </select>
+        </div>
         <div class="row">
           <div class="field">
-            <label for="fetch_interval">Interwał z sieci</label>
+            <label for="fetch_interval">Interwał</label>
             <select id="fetch_interval"></select>
           </div>
           <div class="field">
@@ -66,8 +73,9 @@
           </div>
         </div>
         <p class="hint" id="fetch-hint"></p>
-        <div class="field">
-          <label for="fetch_symbol">Symbol do pobrania z sieci</label>
+
+        <div class="field" data-source="yahoo">
+          <label for="fetch_symbol">Symbol</label>
           <input type="text" id="fetch_symbol" value="GBPUSD=X" list="symbol-presets" spellcheck="false">
           <datalist id="symbol-presets">
             <option value="GBPUSD=X">GBP/USD</option>
@@ -80,59 +88,34 @@
             <option value="^GSPC">S&amp;P 500</option>
             <option value="BTC-USD">Bitcoin</option>
           </datalist>
-          <p class="hint">Symbol w notacji Yahoo Finance. Dotyczy tylko przycisku „Pobierz z sieci” —
-            wgrany plik CSV działa dla dowolnego instrumentu.</p>
+          <p class="hint">Notacja Yahoo Finance. Wgrany plik CSV działa dla dowolnego instrumentu.</p>
         </div>
+
+        <div class="field" data-source="dukascopy">
+          <label for="duka_instrument">Instrument</label>
+          <select id="duka_instrument"></select>
+          <p class="hint">Archiwum tickowe — aplikacja pobiera ticki i sama składa z nich świece.
+            Pobrane godziny trafiają do pamięci podręcznej, więc powtórka tego samego okresu
+            jest natychmiastowa.</p>
+        </div>
+
+        <div class="progress" id="duka-progress" hidden>
+          <div class="progress-track"><div class="progress-fill" id="duka-fill"></div></div>
+          <div class="progress-row">
+            <span class="progress-text" id="duka-text"></span>
+            <button type="button" class="btn btn-ghost btn-small" id="btn-duka-cancel">Przerwij</button>
+          </div>
+        </div>
+        <div data-source="dukascopy">
+          <button type="button" class="btn btn-ghost btn-small" id="btn-duka-probe">Sprawdź połączenie</button>
+          <p class="hint" id="duka-probe-result" hidden></p>
+        </div>
+
         <div class="field">
           <label for="timezone">Strefa czasowa wykresu</label>
           <select id="timezone" name="timezone"></select>
           <p class="hint">Godzina sygnału liczona jest w tej strefie. Ustaw ją tak, jak masz w TradingView.</p>
         </div>
-
-        <details class="subsection" id="dukascopy-box">
-          <summary>Pełna historia z Dukascopy</summary>
-          <p class="hint">Darmowe archiwum danych tickowych sięgające 2003 roku — bez konta i bez
-            limitów planu. Aplikacja pobiera ticki i sama składa z nich świece. Pobrane godziny
-            trafiają do pamięci podręcznej, więc kolejne pobranie tego samego okresu jest natychmiastowe.</p>
-          <div class="field">
-            <label for="duka_instrument">Instrument</label>
-            <select id="duka_instrument"></select>
-          </div>
-          <div class="row">
-            <div class="field">
-              <label for="duka_from">Od</label>
-              <input type="date" id="duka_from" min="2003-01-01">
-            </div>
-            <div class="field">
-              <label for="duka_to">Do</label>
-              <input type="date" id="duka_to" min="2003-01-01">
-            </div>
-          </div>
-          <div class="field">
-            <label for="duka_interval">Interwał składanych świec</label>
-            <select id="duka_interval">
-              <option value="1">1 minuta (najdokładniej, największy plik)</option>
-              <option value="5">5 minut</option>
-              <option value="15" selected>15 minut</option>
-              <option value="30">30 minut</option>
-              <option value="60">1 godzina</option>
-            </select>
-          </div>
-          <div class="row">
-            <button type="button" class="btn btn-ghost" id="btn-duka">Pobierz z Dukascopy</button>
-            <button type="button" class="btn btn-ghost" id="btn-duka-probe">Sprawdź połączenie</button>
-          </div>
-          <p class="hint" id="duka-probe-result" hidden></p>
-          <div class="progress" id="duka-progress" hidden>
-            <div class="progress-track"><div class="progress-fill" id="duka-fill"></div></div>
-            <div class="progress-row">
-              <span class="progress-text" id="duka-text"></span>
-              <button type="button" class="btn btn-ghost btn-small" id="btn-duka-cancel">Przerwij</button>
-            </div>
-          </div>
-          <p class="hint" id="duka-hint">Pobieranie idzie plik po pliku, jeden na godzinę handlu — miesiąc to
-            kilkanaście sekund, rok kilka minut. Zacznij od krótszego zakresu, żeby sprawdzić połączenie.</p>
-        </details>
       </fieldset>
 
       <fieldset class="group">

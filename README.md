@@ -84,6 +84,22 @@ którą masz ustawioną w TradingView, inaczej „8:00" będzie oznaczać inną 
 
 ### Przycisk „Pobierz z sieci"
 
+Jeden formularz obsługuje dwa źródła — wybierasz je polem **„Skąd pobierać"**:
+
+| Źródło | Zasięg | Kiedy używać |
+|---|---|---|
+| **Yahoo Finance** | zależny od interwału, patrz niżej | szybki rzut oka na ostatnie tygodnie |
+| **Dukascopy** | pełne archiwum **od 2003 roku** | wieloletnie testy, dowolny interwał od 1 minuty |
+
+W obu przypadkach podajesz **interwał** i **ile dni wstecz**, i klikasz ten sam przycisk.
+Reszta dzieje się sama: Dukascopy pobiera plik po pliku (jeden na godzinę handlu) i przy
+wdrożeniu bezserwerowym samo wznawia pobieranie po każdej przerwie na limit czasu.
+
+Przycisk **„Sprawdź połączenie"** (widoczny przy wybranym Dukascopy) pobiera jeden testowy
+plik i mówi wprost, czy archiwum jest osiągalne — przydaje się, gdy pobieranie nie rusza.
+
+#### Yahoo Finance — zasięg
+
 Pobiera dane z publicznego API Yahoo Finance. Wybierasz **interwał** i **ile dni wstecz**;
 ponieważ jedno żądanie oddaje ograniczony wycinek, dłuższy okres kompletuje się **oknami
 wstecz** — najpierw najświeższe, potem coraz starsze, aż do żądanej daty albo do końca
@@ -99,9 +115,9 @@ Zasięg jest po stronie Yahoo twardo ograniczony i **zależy od interwału**:
 | 1 dzień | pełna dostępna historia |
 
 Świec 15-minutowych starszych niż ~60 dni Yahoo po prostu nie udostępnia — żaden sposób
-pytania tego nie obejdzie. **Po wieloletnią historię minutową sięgnij po Dukascopy** (sekcja
-niżej, archiwum od 2003 roku) albo wgraj eksport CSV z TradingView. Interfejs mówi to wprost,
-zanim klikniesz pobieranie, a po pobraniu raportuje, ile dni faktycznie uzbierał.
+pytania tego nie obejdzie. **Po wieloletnią historię minutową przełącz źródło na Dukascopy**
+albo wgraj eksport CSV z TradingView. Interfejs mówi to wprost, zanim klikniesz pobieranie,
+a po pobraniu raportuje, ile dni faktycznie uzbierał.
 
 To **inny dostawca kwotowań niż TradingView** — świece mogą się nieznacznie różnić.
 
