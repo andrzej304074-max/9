@@ -20,7 +20,12 @@ from pydantic import BaseModel, Field
 
 from .config import BacktestConfig, ConfigError, options_payload
 from .csv_loader import DataError, LoadResult, bars_to_csv, load_bars, suggest_pip_size
-from .dukascopy import DEFAULT_INSTRUMENT, download_bars, instruments_payload
+from .dukascopy import (
+    DEFAULT_INSTRUMENT,
+    download_bars,
+    download_window,
+    instruments_payload,
+)
 from .engine import run_backtest
 from .fetch import DEFAULT_SYMBOL, fetch_bars, intervals_payload, max_history_days
 from .runtime import (
@@ -383,22 +388,33 @@ def dukascopy_chunk(request: DukascopyChunkRequest) -> dict[str, Any]:
     if start > end:
         raise DataError("Data początkowa jest późniejsza niż końcowa.")
 
-    limit = dukascopy_day_limit()
-    if limit and (end - start).days + 1 > limit:
-        raise DataError(f"Pojedynczy odcinek nie może być dłuższy niż {limit} dni.")
+    # Nie ograniczamy tu długości zakresu: pobieranie i tak zatrzyma się na granicy
+    # budżetu czasu i odda komplet dni domkniętych do tej pory.
+    # Ile zdążymy, zależy od prędkości łącza do archiwum, a tej nie da się z góry zgadnąć.
+    # Dlatego pobieramy do wyczerpania budżetu i mówimy, dokąd doszliśmy — front wznowi
+    # od następnego dnia. Zapas zostawiamy na złożenie CSV i odesłanie odpowiedzi.
+    deadline = time.monotonic() + MAX_REQUEST_SECONDS * 0.65 if IS_SERVERLESS else None
 
-    bars = download_bars(
+    outcome = download_window(
         instrument=request.instrument,
         start=start,
         end=end,
         interval_minutes=request.interval_minutes,
         price=request.price,
         cache_dir=DUKASCOPY_CACHE,
+        deadline=deadline,
     )
-    text = bars_to_csv(bars)
+    text = bars_to_csv(outcome.bars)
     if not request.with_header:
         text = text.split("\n", 1)[1] if "\n" in text else ""
-    return {"csv": text, "bars": len(bars)}
+    return {
+        "csv": text,
+        "bars": len(outcome.bars),
+        # dzień domknięty w całości — stąd front zaczyna kolejne żądanie
+        "covered_to": outcome.covered_to.isoformat() if outcome.covered_to else None,
+        "complete": outcome.complete,
+        "failed_hours": outcome.failed_hours,
+    }
 
 
 @app.get("/api/dukascopy/status/{job_id}")

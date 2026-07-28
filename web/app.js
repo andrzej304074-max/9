@@ -586,11 +586,11 @@ function applyRuntimeLimits() {
   if (!serverless) return;
 
   const hint = $('duka-hint');
-  if (hint && maxDays) {
-    hint.textContent = `Ta instancja działa bezserwerowo, więc jedno żądanie ma limit czasu. `
-      + `Dłuższe zakresy pobierają się automatycznie odcinkami po ${maxDays} dni, jeden po drugim, `
-      + `aż do wyczerpania okresu — możesz spokojnie wybrać kilka lat. Potrwa to odpowiednio dłużej, `
-      + `a przerwać można między odcinkami.`;
+  if (hint) {
+    hint.textContent = 'Ta instancja działa bezserwerowo, więc jedno żądanie ma limit czasu. '
+      + 'Pobieranie samo dzieli się na części: serwer bierze tyle dni, ile zdąży, a przeglądarka '
+      + 'wznawia od miejsca, w którym przerwał — aż do końca zakresu. Możesz spokojnie wybrać '
+      + 'kilka lat, potrwa to tylko odpowiednio dłużej. Przerwać można między częściami.';
   }
 
   const uploadHint = $('upload-hint');
@@ -639,9 +639,10 @@ async function startDukascopy() {
   $('duka-text').textContent = 'Nawiązuję połączenie…';
   setStatus('Pobieram dane z Dukascopy…');
 
-  // Gdy środowisko narzuca limit długości jednego żądania, zakres pobieramy odcinkami.
-  if (state.runtime.dukascopy_max_days) {
-    await downloadInChunks(body, state.runtime.dukascopy_max_days);
+  // Gdy środowisko narzuca limit czasu żądania, zakres pobieramy partiami, wznawiając
+  // od miejsca, w którym serwer musiał przerwać.
+  if (state.runtime.serverless) {
+    await downloadInChunks(body);
     return;
   }
 
@@ -660,22 +661,17 @@ async function startDukascopy() {
   }
 }
 
-/** Dzieli zakres dat na odcinki nie dłuższe niż `maxDays`. */
-function splitDateRange(fromIso, toIso, maxDays) {
-  const iso = (d) => d.toISOString().slice(0, 10);
-  const end = new Date(`${toIso}T00:00:00Z`);
-  const chunks = [];
-  let cursor = new Date(`${fromIso}T00:00:00Z`);
+/** Następny dzień po podanej dacie ISO. */
+function nextDay(iso) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
 
-  while (cursor <= end) {
-    const stop = new Date(cursor);
-    stop.setUTCDate(stop.getUTCDate() + maxDays - 1);
-    if (stop > end) stop.setTime(end.getTime());
-    chunks.push({ from: iso(cursor), to: iso(stop) });
-    cursor = new Date(stop);
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return chunks;
+/** Ile dni dzieli dwie daty ISO (włącznie). */
+function daysBetween(fromIso, toIso) {
+  const ms = new Date(`${toIso}T00:00:00Z`) - new Date(`${fromIso}T00:00:00Z`);
+  return Math.round(ms / 86400000) + 1;
 }
 
 /** Pobiera długi zakres kawałek po kawałku i skleja go w przeglądarce.
@@ -684,31 +680,44 @@ function splitDateRange(fromIso, toIso, maxDays) {
  * komplet wraca na serwer jako jeden plik — dokładnie tak, jakby użytkownik wgrał go
  * ręcznie, co przy okazji pozwala odtworzyć dane po zimnym starcie instancji.
  */
-async function downloadInChunks(body, maxDays) {
-  const chunks = splitDateRange(body.date_from, body.date_to, maxDays);
+async function downloadInChunks(body) {
   const token = `chunks-${Date.now()}`;
   state.dukascopyJob = token;
 
+  const total = daysBetween(body.date_from, body.date_to);
   const parts = [];
   let bars = 0;
+  let failed = 0;
+  let round = 0;
+  let cursor = body.date_from;
   const humanDate = (s) => s.split('-').reverse().join('.');
 
   try {
-    for (let i = 0; i < chunks.length; i += 1) {
+    while (cursor <= body.date_to) {
       if (state.dukascopyJob !== token) return;      // użytkownik przerwał
 
-      $('duka-fill').style.width = `${Math.round((i / chunks.length) * 100)}%`;
-      $('duka-text').textContent = `Odcinek ${i + 1} z ${chunks.length} · `
-        + `${humanDate(chunks[i].from)} → ${humanDate(chunks[i].to)}`
-        + (bars ? ` · ${bars.toLocaleString('pl-PL')} świec` : '');
+      const donePct = Math.round((daysBetween(body.date_from, cursor) / total) * 100);
+      $('duka-fill').style.width = `${Math.min(99, donePct)}%`;
+      $('duka-text').textContent = `Pobieram od ${humanDate(cursor)}`
+        + (bars ? ` · ${bars.toLocaleString('pl-PL')} świec` : '')
+        + (round ? ` · część ${round + 1}` : '');
 
       const chunk = await callApi('api/dukascopy/chunk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, date_from: chunks[i].from, date_to: chunks[i].to, with_header: i === 0 }),
+        body: JSON.stringify({ ...body, date_from: cursor, with_header: round === 0 }),
       });
       parts.push(chunk.csv);
       bars += chunk.bars;
+      failed += chunk.failed_hours || 0;
+      round += 1;
+
+      // Serwer pobiera, ile zdąży w swoim limicie czasu, i mówi, dokąd doszedł.
+      // Wznawiamy od następnego dnia, aż domkniemy cały zakres.
+      if (chunk.complete || !chunk.covered_to) break;
+      const resume = nextDay(chunk.covered_to);
+      if (resume <= cursor) break;                   // brak postępu — nie zapętlaj się
+      cursor = resume;
     }
     if (state.dukascopyJob !== token) return;
 
@@ -719,6 +728,13 @@ async function downloadInChunks(body, maxDays) {
 
     $('duka-fill').style.width = '100%';
     $('duka-text').textContent = `Scalam ${bars.toLocaleString('pl-PL')} świec i wysyłam…`;
+    if (failed) {
+      // Przy dziesiątkach tysięcy plików pojedyncze wywrotki są normalne — ale użytkownik
+      // ma prawo wiedzieć, że w danych są dziury.
+      setStatus(`Uwaga: ${failed} godzin nie udało się pobrać mimo ponowień — w danych `
+        + 'mogą być drobne luki. Powtórzenie pobrania uzupełni brakujące godziny '
+        + '(reszta jest już w pamięci podręcznej, więc pójdzie szybko).');
+    }
 
     const file = new File([parts.join('')], `dukascopy-${body.instrument}.csv`, { type: 'text/csv' });
     const limit = state.runtime.max_upload_bytes;

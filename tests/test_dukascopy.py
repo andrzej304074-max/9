@@ -2,7 +2,8 @@
 
 import lzma
 import struct
-from datetime import date, datetime, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -133,7 +134,15 @@ def test_hours_in_range_skips_saturdays():
     hours = hours_in_range(date(2024, 1, 5), date(2024, 1, 8))
     days = sorted({h.day for h in hours})
     assert days == [5, 7, 8]           # sobota wypada
-    assert len(hours) == 3 * 24
+    # piątek i poniedziałek w całości, z niedzieli tylko wieczorne otwarcie rynku
+    assert len(hours) == 24 + 3 + 24
+
+
+def test_sunday_morning_is_not_downloaded():
+    """Niedzielne przedpołudnie to gwarantowane puste pliki — przy wieloletnim
+    zakresie ich pomijanie oszczędza kilkanaście procent żądań."""
+    sunday = [h.hour for h in hours_in_range(date(2024, 1, 7), date(2024, 1, 7))]
+    assert sunday == [21, 22, 23]
 
 
 def test_hours_in_range_single_day():
@@ -330,3 +339,113 @@ def test_aggregated_bars_pass_ohlc_validation():
         assert bar.high >= max(bar.open, bar.close)
         assert bar.low <= min(bar.open, bar.close)
         assert bar.high >= bar.low
+
+
+# --- pobieranie wznawialne i odporne na awarie --------------------------------------
+
+
+def test_deadline_stops_between_days_and_reports_how_far_it_got(tmp_path, monkeypatch):
+    """Sedno poprawki na Vercelu: zamiast dać się ubić po 60 s, oddajemy komplet
+    domkniętych dni i mówimy, skąd wznowić."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: make_bi5([(0, 126_350, 126_340)]))
+    result = duka.download_window(
+        start=date(2024, 1, 1), end=date(2024, 1, 31),
+        cache_dir=tmp_path, deadline=time.monotonic() - 1,
+    )
+
+    assert result.stopped_early
+    assert result.covered_to is not None
+    assert result.covered_to < date(2024, 1, 31)      # nie zdążył do końca
+    assert result.bars                                # ale coś przywiózł
+    assert not result.complete
+
+
+def test_resuming_from_covered_to_leaves_no_gap(tmp_path, monkeypatch):
+    """Wznowienie od dnia po `covered_to` musi dać dokładnie ten sam komplet dni
+    co pobranie całości za jednym razem."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: make_bi5([(0, 126_350, 126_340)]))
+    whole = duka.download_window(start=date(2024, 1, 1), end=date(2024, 1, 12), cache_dir=tmp_path)
+
+    first = duka.download_window(
+        start=date(2024, 1, 1), end=date(2024, 1, 12),
+        cache_dir=tmp_path, deadline=time.monotonic() - 1,
+    )
+    second = duka.download_window(
+        start=first.covered_to + timedelta(days=1), end=date(2024, 1, 12), cache_dir=tmp_path
+    )
+
+    glued = sorted({b.ts for b in first.bars} | {b.ts for b in second.bars})
+    assert glued == [b.ts for b in whole.bars]
+    assert len(glued) == len({b.ts for b in first.bars}) + len({b.ts for b in second.bars})
+
+
+def test_the_first_batch_always_runs_even_with_no_budget(tmp_path, monkeypatch):
+    """Inaczej pobieranie stanęłoby w miejscu — bez ani jednego dnia nie ma jak ruszyć dalej."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: make_bi5([(0, 126_350, 126_340)]))
+    result = duka.download_window(
+        start=date(2024, 1, 1), end=date(2024, 1, 31),
+        cache_dir=tmp_path, deadline=time.monotonic() - 999,
+    )
+    assert result.covered_to is not None
+    assert result.bars
+
+
+def test_a_single_broken_hour_does_not_sink_the_whole_download(tmp_path, monkeypatch):
+    """Przy tysiącach plików jedna wywrotka jest nieunikniona i nie może kasować reszty."""
+    import app.dukascopy as duka
+
+    def flaky(url: str):
+        return None if url.endswith("03h_ticks.bi5") else make_bi5([(0, 126_350, 126_340)])
+
+    monkeypatch.setattr(duka, "_fetch_hour", flaky)
+    result = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 3), cache_dir=tmp_path)
+
+    assert result.failed_hours == 2          # po jednej feralnej godzinie na dobę
+    assert result.hours_done == 46
+    assert result.bars
+
+
+def test_a_failed_hour_is_not_cached_as_empty(tmp_path, monkeypatch):
+    """Zapisanie pustki po nieudanym pobraniu utrwaliłoby dziurę na zawsze."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: None)
+    with pytest.raises(DataError, match="ani jednego pliku"):
+        duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 2), cache_dir=tmp_path)
+    assert list(tmp_path.rglob("*.bi5")) == []
+
+
+def test_total_network_failure_is_reported_as_such(tmp_path, monkeypatch):
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: None)
+    with pytest.raises(DataError, match="połączenie z internetem"):
+        duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 3), cache_dir=tmp_path)
+
+
+def test_missing_files_are_not_treated_as_failures(tmp_path, monkeypatch):
+    """404 to weekend albo święto — normalny stan, nie awaria."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: b"")
+    result = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 2), cache_dir=tmp_path)
+
+    assert result.failed_hours == 0
+    assert result.bars == []
+    assert result.covered_to == date(2024, 1, 2)
+
+
+def test_covered_to_only_advances_on_fully_finished_days(tmp_path, monkeypatch):
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: make_bi5([(0, 126_350, 126_340)]))
+    result = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 4), cache_dir=tmp_path)
+
+    assert result.covered_to == date(2024, 1, 4)
+    assert result.complete

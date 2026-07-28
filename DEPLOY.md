@@ -14,15 +14,15 @@ klikniesz „Deploy":
 
 | | Lokalnie | Na Vercelu |
 |---|---|---|
-| **Pobieranie z Dukascopy** | Bez limitu, jedno zadanie w tle, pasek postępu co plik | Dowolny zakres, ale pobierany odcinkami po ~70 dni; postęp liczony w odcinkach |
+| **Pobieranie z Dukascopy** | Bez limitu, jedno zadanie w tle, pasek postępu co plik | Dowolny zakres, pobierany częściami dobieranymi automatycznie do limitu czasu |
 | **Wgrywanie plików CSV** | Do 64 MB | Do 4 MB **po kompresji** (≈ 20 MB CSV, czyli kilkanaście lat świec 15-minutowych) |
 | **Pamięć między żądaniami** | Trwała, dopóki serwer działa | Ulotna — aplikacja sama wysyła dane ponownie, gdy trafi na świeżą instancję |
 
 Żadna z tych różnic nie wymaga od Ciebie niczego w trakcie pracy — aplikacja radzi sobie
-z nimi sama. Możesz spokojnie wybrać kilka lat historii: przeglądarka podzieli zakres na
-odcinki, pobierze je jeden po drugim i skoro tylko skompletuje całość, wyśle ją na serwer
-jako jeden plik. Potrwa to proporcjonalnie dłużej niż lokalnie, a przerwać można między
-odcinkami.
+z nimi sama. Możesz spokojnie wybrać kilka lat historii: serwer pobiera tyle, ile zdąży
+w jednym żądaniu, raportuje, do którego dnia doszedł, a przeglądarka wznawia od następnego —
+aż do końca zakresu. Skompletowaną całość wysyła na serwer jako jeden plik. Potrwa to
+proporcjonalnie dłużej niż lokalnie, a przerwać można między częściami.
 
 ---
 
@@ -83,15 +83,17 @@ wymaga zmiany. Ustawia się je w panelu Vercela: **Settings → Environment Vari
 
 | Zmienna | Domyślnie | Kiedy zmieniać |
 |---|---|---|
-| `BACKTESTER_MAX_SECONDS` | `60` | Gdy masz plan Pro i podniesiesz `maxDuration` w `vercel.json` — limit dni Dukascopy przeliczy się automatycznie. |
+| `BACKTESTER_MAX_SECONDS` | `60` | Gdy masz plan Pro i podniesiesz `maxDuration` w `vercel.json` — pobieranie zacznie brać większe porcje na jedno żądanie. |
 | `BACKTESTER_MAX_UPLOAD` | `4194304` | Gdyby platforma podniosła limit ciała żądania. |
 | `BACKTESTER_STATE_DIR` | `/tmp/backtester` | Praktycznie nigdy. |
 
-### Plan Pro — dłuższe pobierania
+### Plan Pro — szybsze pobieranie
 
 Na planie Pro możesz wydłużyć limit czasu. W `vercel.json` zmień `maxDuration` na `300`,
-a w zmiennych środowiskowych ustaw `BACKTESTER_MAX_SECONDS=300`. Limit pobierania z Dukascopy
-podniesie się wtedy sam do około 360 dni.
+a w zmiennych środowiskowych ustaw `BACKTESTER_MAX_SECONDS=300`. Pobieranie z Dukascopy
+będzie wtedy brało pięciokrotnie większe porcje na jedno żądanie, czyli ten sam zakres
+skompletuje się w mniejszej liczbie części. Na planie Hobby też się skompletuje — po prostu
+w większej liczbie kroków.
 
 ---
 
@@ -118,10 +120,11 @@ i czy w ustawieniach projektu *Output Directory* jest puste.
 **`ModuleNotFoundError: No module named 'app'`.** Katalog `app/` nie został wdrożony — upewnij
 się, że nie dopisałeś go do `.vercelignore` i że jest śledzony przez gita (`git ls-files app/`).
 
-**Pobieranie z Dukascopy przerywa się na którymś odcinku.** Odcinki idą po kolei, więc błąd
-dotyczy jednego z nich — najczęściej to chwilowy problem z archiwum. Uruchom pobieranie
-ponownie: odcinki pobrane wcześniej siedzą w pamięci podręcznej instancji, więc powtórka
-zwykle jest znacznie szybsza. Jeśli błąd się powtarza, skróć zakres.
+**Pobieranie z Dukascopy przerywa się w połowie.** Pojedyncze nieudane godziny nie zatrzymują
+już pobierania — są pomijane i zliczane, a po zakończeniu dostajesz informację, ile ich było.
+Powtórzenie pobrania uzupełni luki, bo reszta jest już w pamięci podręcznej. Komunikat
+„nie udało się pobrać ani jednego pliku" oznacza natomiast realny problem z łączem albo
+z dostępem do archiwum.
 
 **Komunikat, że scalony plik przekracza limit.** Zakres pobrał się w całości, ale komplet
 danych nie mieści się w limicie żądania. Wybierz rzadszy interwał (np. 15 minut zamiast

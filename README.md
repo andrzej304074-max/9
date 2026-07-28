@@ -48,9 +48,10 @@ ustawienia domyślne i kliknij *Deploy*. Konfigurację niesie plik `vercel.json`
 Środowisko bezserwerowe nakłada trzy ograniczenia, z którymi aplikacja radzi sobie sama, ale
 warto o nich wiedzieć:
 
-- **Pobieranie z Dukascopy** dzieli się na odcinki po ~70 dni, pobierane jeden po drugim aż do
-  wyczerpania zakresu; komplet trafia na serwer jako jeden plik. Zakres może być dowolnie długi,
-  potrwa tylko proporcjonalnie dłużej. Lokalnie zamiast tego działa jedno zadanie w tle
+- **Pobieranie z Dukascopy** samo dzieli się na części: serwer bierze tyle dni, ile zdąży
+  w swoim limicie czasu, i mówi, dokąd doszedł, a przeglądarka wznawia od następnego dnia — aż
+  do końca zakresu. Nie ma tu żadnego z góry ustalonego rozmiaru części, więc mechanizm sam
+  dostosowuje się do prędkości łącza. Lokalnie zamiast tego działa jedno zadanie w tle
   z postępem liczonym co plik.
 - **Wgrywany plik** jest pakowany gzipem w przeglądarce; limit 4 MB po kompresji odpowiada
   mniej więcej 20 MB CSV, czyli kilkunastu latom świec 15-minutowych.

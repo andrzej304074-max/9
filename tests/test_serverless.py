@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import importlib
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -221,9 +222,22 @@ def fake_bars(start: str, count: int):
     ]
 
 
+def stub_window(module, monkeypatch, bars, covered_to="2024-01-02", stopped_early=False):
+    """Podstawia pobieranie zwracające gotowy wynik, bez ruszania sieci."""
+    from app.dukascopy import DownloadResult
+
+    monkeypatch.setattr(
+        module,
+        "download_window",
+        lambda **kw: DownloadResult(
+            bars=bars, covered_to=date.fromisoformat(covered_to), stopped_early=stopped_early
+        ),
+    )
+
+
 def test_chunk_returns_csv_with_a_header(serverless_app, monkeypatch):
     module, client = serverless_app
-    monkeypatch.setattr(module, "download_bars", lambda **kw: fake_bars("2024-01-01", 3))
+    stub_window(module, monkeypatch, fake_bars("2024-01-01", 3))
 
     response = client.post(
         "/api/dukascopy/chunk", json={"date_from": "2024-01-01", "date_to": "2024-01-02"}
@@ -231,12 +245,13 @@ def test_chunk_returns_csv_with_a_header(serverless_app, monkeypatch):
     assert response.status_code == 200
     assert response.json()["bars"] == 3
     assert response.json()["csv"].startswith("time,open,high,low,close")
+    assert response.json()["complete"] is True
 
 
 def test_chunk_can_skip_the_header_for_continuation(serverless_app, monkeypatch):
-    """Kolejne odcinki dokleja się do pierwszego, więc nagłówek może być tylko jeden."""
+    """Kolejne części dokleja się do pierwszej, więc nagłówek może być tylko jeden."""
     module, client = serverless_app
-    monkeypatch.setattr(module, "download_bars", lambda **kw: fake_bars("2024-01-03", 3))
+    stub_window(module, monkeypatch, fake_bars("2024-01-03", 3))
 
     body = {"date_from": "2024-01-03", "date_to": "2024-01-04", "with_header": False}
     csv_text = client.post("/api/dukascopy/chunk", json=body).json()["csv"]
@@ -247,11 +262,11 @@ def test_chunk_can_skip_the_header_for_continuation(serverless_app, monkeypatch)
 
 
 def test_glued_chunks_parse_as_one_dataset(serverless_app, monkeypatch):
-    """Sedno pomysłu: odcinki sklejone w przeglądarce muszą dać poprawny plik."""
+    """Sedno pomysłu: części sklejone w przeglądarce muszą dać poprawny plik."""
     module, client = serverless_app
     pieces = []
-    for index, (start, day) in enumerate([("2024-01-01", "2024-01-01"), ("2024-01-02", "2024-01-02")]):
-        monkeypatch.setattr(module, "download_bars", lambda _s=start, **kw: fake_bars(_s, 24))
+    for index, day in enumerate(["2024-01-01", "2024-01-02"]):
+        stub_window(module, monkeypatch, fake_bars(day, 24), covered_to=day)
         pieces.append(
             client.post(
                 "/api/dukascopy/chunk",
@@ -263,14 +278,14 @@ def test_glued_chunks_parse_as_one_dataset(serverless_app, monkeypatch):
     uploaded = client.post("/api/upload", files={"file": ("scalone.csv", merged, "text/csv")})
 
     assert uploaded.status_code == 200
-    assert uploaded.json()["bars"] == 48          # oba odcinki, bez zgubionych wierszy
+    assert uploaded.json()["bars"] == 48          # obie części, bez zgubionych wierszy
     assert uploaded.json()["interval_minutes"] == 60
 
 
 def test_empty_chunk_glues_cleanly(serverless_app, monkeypatch):
-    """Weekend nie ma notowań — pusty odcinek nie może popsuć sklejenia."""
+    """Weekend nie ma notowań — pusta część nie może popsuć sklejenia."""
     module, client = serverless_app
-    monkeypatch.setattr(module, "download_bars", lambda **kw: [])
+    stub_window(module, monkeypatch, [])
 
     csv_text = client.post(
         "/api/dukascopy/chunk",
@@ -279,13 +294,25 @@ def test_empty_chunk_glues_cleanly(serverless_app, monkeypatch):
     assert csv_text == ""
 
 
-def test_chunk_longer_than_the_budget_is_rejected(serverless_app):
-    _, client = serverless_app
+def test_a_long_chunk_returns_partial_data_instead_of_being_rejected(serverless_app, monkeypatch):
+    """Wieloletni zakres nie jest już odrzucany: serwer bierze tyle, ile zdąży,
+    i mówi frontowi, skąd wznowić."""
+    module, client = serverless_app
+    from app.dukascopy import DownloadResult
+
+    monkeypatch.setattr(
+        module,
+        "download_window",
+        lambda **kw: DownloadResult(
+            bars=fake_bars("2020-01-01", 24), covered_to=date(2020, 3, 1), stopped_early=True
+        ),
+    )
     response = client.post(
         "/api/dukascopy/chunk", json={"date_from": "2020-01-01", "date_to": "2024-12-31"}
     )
-    assert response.status_code == 400
-    assert "odcinek" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    assert response.json()["covered_to"] == "2020-03-01"
+    assert response.json()["complete"] is False
 
 
 def test_chunk_validates_the_date_order(serverless_app):
