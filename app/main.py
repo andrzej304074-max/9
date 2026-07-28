@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import threading
+import time
 import uuid
 import zlib
 from datetime import date
@@ -21,10 +22,11 @@ from .config import BacktestConfig, ConfigError, options_payload
 from .csv_loader import DataError, LoadResult, bars_to_csv, load_bars, suggest_pip_size
 from .dukascopy import DEFAULT_INSTRUMENT, download_bars, instruments_payload
 from .engine import run_backtest
-from .fetch import DEFAULT_SYMBOL, fetch_bars
+from .fetch import DEFAULT_SYMBOL, fetch_bars, intervals_payload, max_history_days
 from .runtime import (
     BASE_DIR,
     IS_SERVERLESS,
+    MAX_REQUEST_SECONDS,
     MAX_UPLOAD_BYTES,
     describe as describe_runtime,
     dukascopy_day_limit,
@@ -59,7 +61,7 @@ class CompareRequest(BaseModel):
 class FetchRequest(BaseModel):
     symbol: str = DEFAULT_SYMBOL
     interval: str = "15m"
-    range: str = "60d"
+    days: int = 60
     timezone: str = "Europe/London"
 
 
@@ -193,6 +195,8 @@ def get_options() -> dict[str, Any]:
         "timezones": popular + others,
         "sample_available": SAMPLE_FILE.exists(),
         "dukascopy_instruments": instruments_payload(),
+        "fetch_intervals": intervals_payload(),
+        "fetch_history_days": {key: max_history_days(key) for key in intervals_payload()},
         "runtime": describe_runtime(),
     }
 
@@ -256,13 +260,30 @@ def sample(timezone: str = "Europe/London") -> dict[str, Any]:
 
 @app.post("/api/fetch")
 def fetch(request: FetchRequest) -> dict[str, Any]:
-    bars = fetch_bars(symbol=request.symbol, interval=request.interval, range_=request.range)
-    dataset_id = _store(bars_to_csv(bars))
+    """Kompletuje żądany okres, cofając się oknami — jedno żądanie do dostawcy nie wystarcza."""
+    # Zostawiamy zapas na złożenie CSV i sparsowanie go po pobraniu.
+    deadline = time.monotonic() + MAX_REQUEST_SECONDS * 0.7 if IS_SERVERLESS else None
+
+    outcome = fetch_bars(
+        symbol=request.symbol,
+        interval=request.interval,
+        days=request.days,
+        deadline=deadline,
+    )
+    dataset_id = _store(bars_to_csv(outcome.bars))
     result = _parse(dataset_id, request.timezone)
-    payload = _dataset_payload(dataset_id, result, f"Yahoo Finance ({request.symbol})", request.timezone)
-    payload["warnings"] = payload["warnings"] + [
+    payload = _dataset_payload(
+        dataset_id, result, f"Yahoo Finance ({request.symbol})", request.timezone
+    )
+    payload["warnings"] = payload["warnings"] + outcome.notes + [
         "Dane pochodzą z Yahoo Finance, nie z TradingView — kwotowania mogą się nieznacznie różnić."
     ]
+    payload["fetch"] = {
+        "requested_days": outcome.requested_days,
+        "covered_days": outcome.covered_days,
+        "windows": outcome.windows,
+        "stopped_early": outcome.stopped_early,
+    }
     return payload
 
 

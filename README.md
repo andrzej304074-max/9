@@ -83,12 +83,30 @@ którą masz ustawioną w TradingView, inaczej „8:00" będzie oznaczać inną 
 
 ### Przycisk „Pobierz z sieci"
 
-Pobiera około 60 dni danych 15-minutowych z publicznego API Yahoo Finance. Wygodne na szybki
-rzut oka, ale to **inny dostawca kwotowań niż TradingView** — świece mogą się nieznacznie różnić.
+Pobiera dane z publicznego API Yahoo Finance. Wybierasz **interwał** i **ile dni wstecz**;
+ponieważ jedno żądanie oddaje ograniczony wycinek, dłuższy okres kompletuje się **oknami
+wstecz** — najpierw najświeższe, potem coraz starsze, aż do żądanej daty albo do końca
+archiwum dostawcy.
 
-> Ta ścieżka nie została przetestowana w środowisku, w którym powstawał projekt, bo polityka
-> sieciowa blokowała tam zewnętrzne hosty. Kod obsługuje błąd czytelnym komunikatem, ale samo
-> pobieranie zadziała dopiero na maszynie z otwartym internetem.
+Zasięg jest po stronie Yahoo twardo ograniczony i **zależy od interwału**:
+
+| Interwał | Jak głęboko sięga |
+|---|---|
+| 1 minuta | 30 dni |
+| 5 / 15 / 30 minut | 60 dni |
+| 1 godzina | 2 lata |
+| 1 dzień | pełna dostępna historia |
+
+Świec 15-minutowych starszych niż ~60 dni Yahoo po prostu nie udostępnia — żaden sposób
+pytania tego nie obejdzie. **Po wieloletnią historię minutową sięgnij po Dukascopy** (sekcja
+niżej, archiwum od 2003 roku) albo wgraj eksport CSV z TradingView. Interfejs mówi to wprost,
+zanim klikniesz pobieranie, a po pobraniu raportuje, ile dni faktycznie uzbierał.
+
+To **inny dostawca kwotowań niż TradingView** — świece mogą się nieznacznie różnić.
+
+> Ta ścieżka nie została przetestowana na żywym API w środowisku, w którym powstawał projekt,
+> bo polityka sieciowa blokowała tam zewnętrzne hosty. Samo cofanie się oknami, sklejanie
+> i zachowanie na granicy archiwum są pokryte testami na atrapie dostawcy.
 
 ### Inne instrumenty niż GBP/USD
 
@@ -122,7 +140,7 @@ Prawdziwym ograniczeniem jest **zdobycie takich danych**. TradingView eksportuje
 jest wczytane na wykresie, a ile świec da się wczytać, zależy od planu — na darmowym koncie
 zwykle kilka tysięcy, na płatnych więcej, ale i tak znacznie mniej niż ćwierć miliona świec
 potrzebnych na 10 lat interwału 15-minutowego. Przycisk „Pobierz z sieci" odpada tym bardziej:
-Yahoo oddaje dla 15 minut najwyżej około 60 dni.
+Yahoo oddaje dla 15 minut najwyżej około 60 dni, niezależnie od tego, o ile poprosisz.
 
 Na naprawdę długą historię sięgnij po źródło, które daje pełne archiwum:
 
@@ -150,6 +168,7 @@ Sekcja **„Pełna historia z Dukascopy"** w panelu danych (domyślnie zwinięta
 prosto z darmowego archiwum Dukascopy: **dane tickowe sięgające 2003 roku, bez konta i bez
 limitów planu**. To jedyna opcja w tej aplikacji, która nie jest niczym ścięta — TradingView
 ogranicza eksport tym, ile świec wczyta wykres, a Yahoo oddaje dla 15 minut jakieś 60 dni.
+Dukascopy nie ma tego ograniczenia — sięga 2003 roku i to jego używaj do wieloletnich testów.
 
 Jak to działa: Dukascopy trzyma po jednym spakowanym pliku na każdą godzinę handlu.
 Aplikacja pobiera je równolegle, rozpakowuje, odczytuje ticki i **sama składa z nich świece**
@@ -319,7 +338,7 @@ app/
   csv_loader.py   normalizacja plików CSV z TradingView
   engine.py       silnik backtestu
   stats.py        metryki i rozbicie na dni tygodnia
-  fetch.py        opcjonalne pobieranie danych z Yahoo Finance
+  fetch.py        pobieranie z Yahoo Finance oknami wstecz
   dukascopy.py    pobieranie archiwum tickowego i składanie go w świece
   runtime.py      rozpoznanie środowiska (lokalne kontra bezserwerowe)
   main.py         serwer HTTP i API
@@ -337,6 +356,7 @@ python3 -m pytest tests/ -q
 ```
 
 Testy sprawdzają parser CSV (warianty formatu czasu, separatory, odrzucanie złych wierszy),
+pobieranie z sieci oknami wstecz (sklejanie okien, granica archiwum, budżet czasu),
 obie strategie, wszystkie warianty wyjścia z pozycji, trzy metody stop lossa, trzy tryby
 wielkości pozycji, wszystkie cztery tryby zarządzania pozycją, poprawność stref czasowych,
 zatrzymanie backtestu przy wyzerowaniu kapitału oraz dekoder archiwum Dukascopy.
@@ -353,7 +373,7 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `GET /api/options` | Listy opcji i wartości domyślne. |
 | `POST /api/upload` | Wgranie pliku CSV (multipart). Zwraca `dataset_id`. |
 | `GET /api/sample` | Wczytanie danych demo. |
-| `POST /api/fetch` | Pobranie danych z Yahoo Finance. |
+| `POST /api/fetch` | `{"interval": "15m", "days": 60, "symbol": "GBPUSD=X"}` → pobiera oknami wstecz, aż uzbiera okres albo wyczerpie archiwum dostawcy. |
 | `POST /api/dukascopy/start` | Start pobierania z Dukascopy w tle. Zwraca `job_id`. |
 | `GET /api/dukascopy/status/{job_id}` | Postęp pobierania, a po zakończeniu gotowy zbiór danych. |
 | `POST /api/dukascopy/cancel/{job_id}` | Przerwanie pobierania. |

@@ -55,6 +55,17 @@
           <button type="button" class="btn btn-ghost" id="btn-sample">Dane demo</button>
           <button type="button" class="btn btn-ghost" id="btn-fetch">Pobierz z sieci</button>
         </div>
+        <div class="row">
+          <div class="field">
+            <label for="fetch_interval">Interwał z sieci</label>
+            <select id="fetch_interval"></select>
+          </div>
+          <div class="field">
+            <label for="fetch_days">Ile dni wstecz</label>
+            <input type="number" id="fetch_days" value="60" min="1" step="1">
+          </div>
+        </div>
+        <p class="hint" id="fetch-hint"></p>
         <div class="field">
           <label for="fetch_symbol">Symbol do pobrania z sieci</label>
           <input type="text" id="fetch_symbol" value="GBPUSD=X" list="symbol-presets" spellcheck="false">

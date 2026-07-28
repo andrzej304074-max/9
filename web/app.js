@@ -82,6 +82,10 @@ async function init() {
     fillSelect($('timezone'), Object.fromEntries(data.timezones.map((t) => [t, t])));
     Object.entries(data.options).forEach(([key, values]) => fillSelect($(key), values));
     fillSelect($('duka_instrument'), data.dukascopy_instruments || {});
+    fillSelect($('fetch_interval'), data.fetch_intervals || {});
+    $('fetch_interval').value = '15m';
+    state.fetchHistoryDays = data.fetch_history_days || {};
+    syncFetchHint();
     state.runtime = data.runtime || state.runtime;
     applyRuntimeLimits();
     state.saved = loadStoredConfigs();
@@ -163,6 +167,10 @@ function wireEvents() {
 
   document.querySelectorAll('.strategy-tab').forEach((tab) => {
     tab.addEventListener('click', () => switchStrategy(tab.dataset.strategy));
+  });
+  ['fetch_interval', 'fetch_days', 'candle_minutes'].forEach((id) => {
+    $(id).addEventListener('change', syncFetchHint);
+    $(id).addEventListener('input', syncFetchHint);
   });
   $('btn-compare').addEventListener('click', runCompare);
   $('btn-compare-close').addEventListener('click', () => {
@@ -472,8 +480,18 @@ function onDatasetLoaded(data) {
 
   setPriceFormat(data.median_price);
 
-  // rozmiar pipsa zależy od instrumentu — dopasuj go, jeśli podpowiedź się nie zgadza
   const warnings = [...(data.warnings || [])];
+
+  // Dane rzadsze niż świeca sygnałowa dają backtest bez ani jednej pozycji. Bez tego
+  // ostrzeżenia wygląda to jak awaria, a jest zwykłą niezgodnością rozdzielczości.
+  const candle = num('candle_minutes', 15);
+  if (data.interval_minutes && data.interval_minutes > candle) {
+    warnings.push(`Te dane mają rozdzielczość ${data.interval_minutes} min, a świeca sygnałowa `
+      + `trwa ${candle} min — nie da się jej z nich złożyć i backtest nie znajdzie żadnej pozycji. `
+      + `Wgraj dane o interwale ${candle} min lub gęstszym, albo ustaw dłuższą świecę w sekcji 2.`);
+  }
+
+  // rozmiar pipsa zależy od instrumentu — dopasuj go, jeśli podpowiedź się nie zgadza
   const suggested = data.suggested_pip_size;
   if (suggested && Math.abs(num('pip_size', 0.0001) - suggested) > suggested * 1e-6) {
     $('pip_size').value = suggested;
@@ -511,7 +529,8 @@ async function loadSample() {
 }
 
 async function fetchFromNetwork() {
-  await withBusy('btn-fetch', 'Pobieram dane z sieci…', async () => {
+  const days = Math.max(1, num('fetch_days', 60));
+  await withBusy('btn-fetch', `Pobieram ${days} dni oknami wstecz…`, async () => {
     state.source = { kind: 'fetch' };
     onDatasetLoaded(await callApi('api/fetch', {
       method: 'POST',
@@ -519,9 +538,46 @@ async function fetchFromNetwork() {
       body: JSON.stringify({
         timezone: $('timezone').value,
         symbol: $('fetch_symbol').value.trim() || 'GBPUSD=X',
+        interval: $('fetch_interval').value,
+        days,
       }),
     }));
   });
+}
+
+/** Mówi wprost, ile historii da się dostać przy wybranym interwale — zanim ktoś kliknie. */
+function syncFetchHint() {
+  const interval = $('fetch_interval').value;
+  const depth = (state.fetchHistoryDays || {})[interval];
+  const wanted = num('fetch_days', 60);
+  const hint = $('fetch-hint');
+  if (!depth) { hint.textContent = ''; return; }
+
+  const candle = num('candle_minutes', 15);
+  const dataMinutes = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '60m': 60, '1h': 60, '1d': 1440 }[interval];
+
+  // Świeca sygnałowa nie powstanie z danych rzadszych, niż sama trwa — to najczęstsza
+  // przyczyna backtestu bez ani jednej transakcji.
+  if (dataMinutes > candle) {
+    hint.textContent = `Uwaga: świeca sygnałowa trwa ${candle} min, a te dane mają rozdzielczość `
+      + `${dataMinutes} min — nie da się z nich złożyć sygnału i backtest nie znajdzie ani jednej `
+      + `pozycji. Wybierz interwał ${candle} min lub gęstszy, albo zmień długość świecy w sekcji 2.`;
+    hint.classList.add('hint-limit');
+    return;
+  }
+
+  const human = depth >= 10000 ? 'pełną dostępną historię' : (depth >= 365
+    ? `${Math.round(depth / 365)} lat` : `${depth} dni`);
+  if (wanted > depth) {
+    hint.textContent = `Yahoo trzyma dla tego interwału tylko ${human} historii, a poproszono `
+      + `o ${wanted} dni — pobierze się tyle, ile jest. Po głębszą historię minutową użyj `
+      + `Dukascopy poniżej (sięga 2003 roku) albo wgraj plik z TradingView.`;
+    hint.classList.add('hint-limit');
+  } else {
+    hint.textContent = `Pobieranie idzie oknami wstecz, aż uzbiera cały okres. `
+      + `Dla tego interwału Yahoo udostępnia ${human}.`;
+    hint.classList.remove('hint-limit');
+  }
 }
 
 /** Dostosowuje podpowiedzi do ograniczeń środowiska, w którym aplikacja została wdrożona. */
@@ -768,8 +824,35 @@ async function runBacktest() {
     });
     render();
     const { trades_closed: closed, signal_days: days } = state.result.summary;
+
+    // Backtest bez ani jednej pozycji wygląda jak awaria — jeśli znamy przyczynę, podajmy ją
+    // zamiast suchego zera.
+    if (!closed) {
+      setStatus(explainNoTrades(days), 'error');
+      return;
+    }
     setStatus(`Gotowe — ${closed} zagranych pozycji na ${days} dni sygnałowych.`, 'ok');
   });
+}
+
+/** Najczęstsze powody pustego wyniku, w kolejności od najbardziej prawdopodobnego. */
+function explainNoTrades(days) {
+  const candle = num('candle_minutes', 15);
+  const interval = state.result.dataset && state.result.dataset.interval_minutes;
+
+  if (interval && interval > candle) {
+    return `Zero pozycji: dane mają rozdzielczość ${interval} min, a świeca sygnałowa trwa `
+      + `${candle} min — nie da się jej z nich złożyć. Wgraj dane o interwale ${candle} min `
+      + `lub gęstszym, albo ustaw dłuższą świecę sygnałową w sekcji 2.`;
+  }
+  if (!days) {
+    return 'Zero pozycji: żaden dzień nie przeszedł filtrów. Sprawdź zakres dat i wybrane '
+      + 'dni tygodnia w sekcji 6.';
+  }
+  const skipped = (state.result.trades || []).find((t) => t.skip_reason);
+  return `Zero pozycji na ${days} dni sygnałowych`
+    + (skipped ? ` — najczęstszy powód: ${skipped.skip_reason}.` : '.')
+    + ' Sprawdź godzinę świecy sygnałowej i tryb kierunku w sekcji 2.';
 }
 
 /* ---------------- porównanie obu strategii ---------------- */
