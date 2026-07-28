@@ -31,6 +31,19 @@ def make_bi5(records: list[tuple[int, int, int]], cut_tail: int = 0) -> bytes:
     return stream[: len(stream) - cut_tail] if cut_tail else stream
 
 
+
+class _FakeResponse:
+    def __init__(self, payload): self._payload = payload
+    def read(self): return self._payload
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def _fake_urlopen(payload):
+    def _open(*a, **k): return _FakeResponse(payload)
+    return _open
+
+
 HOUR = datetime(2024, 1, 2, 8, tzinfo=timezone.utc)
 
 
@@ -421,11 +434,12 @@ def test_a_failed_hour_is_not_cached_as_empty(tmp_path, monkeypatch):
     assert list(tmp_path.rglob("*.bi5")) == []
 
 
-def test_total_network_failure_is_reported_as_such(tmp_path, monkeypatch):
+def test_total_network_failure_points_at_the_connection_check(tmp_path, monkeypatch):
+    """Komunikat ma kierować do diagnostyki, a nie zostawiać z samym 'nie udało się'."""
     import app.dukascopy as duka
 
     monkeypatch.setattr(duka, "_fetch_hour", lambda url: None)
-    with pytest.raises(DataError, match="połączenie z internetem"):
+    with pytest.raises(DataError, match="Sprawdź połączenie"):
         duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 3), cache_dir=tmp_path)
 
 
@@ -449,3 +463,94 @@ def test_covered_to_only_advances_on_fully_finished_days(tmp_path, monkeypatch):
 
     assert result.covered_to == date(2024, 1, 4)
     assert result.complete
+
+
+# --- diagnostyka połączenia ---------------------------------------------------------
+
+
+def test_probe_reports_success_with_timing(monkeypatch):
+    import app.dukascopy as duka
+
+    payload = make_bi5([(0, 126_350, 126_340), (1000, 126_360, 126_350)])
+    monkeypatch.setattr(duka.urllib.request, "urlopen", _fake_urlopen(payload))
+    r = duka.probe("GBPUSD")
+
+    assert r["ok"] is True
+    assert r["ticks"] == 2
+    assert r["bytes"] == len(payload)
+    assert isinstance(r["ms"], int)
+    assert "/2024/00/02/10h_ticks.bi5" in r["url"]
+
+
+def test_probe_explains_a_blocked_connection(monkeypatch):
+    import app.dukascopy as duka
+
+    def boom(*a, **k):
+        raise duka.urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", boom)
+    r = duka.probe()
+
+    assert r["ok"] is False
+    assert "datafeed.dukascopy.com" in r["error"]
+
+
+def test_probe_flags_a_provider_block(monkeypatch):
+    """403 pod adresem, który na pewno istnieje, znaczy zwykle blokadę ruchu z serwerowni."""
+    import app.dukascopy as duka
+
+    def forbidden(*a, **k):
+        raise duka.urllib.error.HTTPError("u", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", forbidden)
+    r = duka.probe()
+
+    assert r["ok"] is False
+    assert r["status"] == 403
+    assert "blokuje" in r["error"]
+
+
+def test_probe_never_raises(monkeypatch):
+    """Diagnostyka, która sama się wywraca, jest bezużyteczna."""
+    import app.dukascopy as duka
+
+    def nasty(*a, **k):
+        raise OSError("cokolwiek")
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", nasty)
+    assert duka.probe()["ok"] is False
+
+
+# --- szybkie przerwanie przy systemowej awarii --------------------------------------
+
+
+def test_a_completely_dead_day_aborts_immediately(tmp_path, monkeypatch):
+    """Bez tego pobieranie roku mieliłoby tysiące nieudanych żądań, zanim się podda."""
+    import app.dukascopy as duka
+
+    tried = []
+
+    def dead(url: str):
+        tried.append(url)
+        return None
+
+    monkeypatch.setattr(duka, "_fetch_hour", dead)
+    with pytest.raises(DataError, match="ani jednego pliku"):
+        duka.download_window(start=date(2024, 1, 2), end=date(2024, 12, 31), cache_dir=tmp_path)
+
+    assert len(tried) == 24        # poddajemy się po pierwszej dobie, nie po roku
+
+
+def test_partial_failures_do_not_abort(tmp_path, monkeypatch):
+    """Połowa godzin pada, ale doba coś przywiozła — to nie jest awaria systemowa."""
+    import app.dukascopy as duka
+
+    def half(url: str):
+        hour = int(url.split("/")[-1][:2])
+        return None if hour % 2 else make_bi5([(0, 126_350, 126_340)])
+
+    monkeypatch.setattr(duka, "_fetch_hour", half)
+    result = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 3), cache_dir=tmp_path)
+
+    assert result.failed_hours == 24
+    assert result.bars

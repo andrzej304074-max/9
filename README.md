@@ -380,4 +380,5 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/dukascopy/cancel/{job_id}` | Przerwanie pobierania. |
 | `POST /api/backtest` | `{"dataset_id": "...", "config": {...}}` → pełne wyniki. Pole `strategy` wybiera `candle_direction` albo `range_breakout`. |
 | `POST /api/compare` | `{"dataset_id": "...", "configs": {"candle_direction": {...}, "range_breakout": {...}}}` → oba komplety wyników naraz. |
-| `POST /api/dukascopy/chunk` | Pobiera jeden odcinek zakresu i zwraca surowy CSV. Używane przy wdrożeniu bezserwerowym, gdzie długą historię kompletuje się z kawałków. |
+| `POST /api/dukascopy/chunk` | Pobiera tyle dni, ile zmieści się w limicie czasu, i zwraca surowy CSV razem z ostatnim domkniętym dniem. Klient wznawia od następnego. |
+| `GET /api/dukascopy/probe` | Pobiera jeden testowy plik godzinowy i opisuje wynik — diagnostyka na wypadek, gdy pobieranie nie rusza. |

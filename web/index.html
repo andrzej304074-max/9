@@ -118,7 +118,11 @@
               <option value="60">1 godzina</option>
             </select>
           </div>
-          <button type="button" class="btn btn-ghost" id="btn-duka">Pobierz z Dukascopy</button>
+          <div class="row">
+            <button type="button" class="btn btn-ghost" id="btn-duka">Pobierz z Dukascopy</button>
+            <button type="button" class="btn btn-ghost" id="btn-duka-probe">Sprawdź połączenie</button>
+          </div>
+          <p class="hint" id="duka-probe-result" hidden></p>
           <div class="progress" id="duka-progress" hidden>
             <div class="progress-track"><div class="progress-fill" id="duka-fill"></div></div>
             <div class="progress-row">

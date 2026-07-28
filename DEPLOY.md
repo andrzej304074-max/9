@@ -120,6 +120,11 @@ i czy w ustawieniach projektu *Output Directory* jest puste.
 **`ModuleNotFoundError: No module named 'app'`.** Katalog `app/` nie został wdrożony — upewnij
 się, że nie dopisałeś go do `.vercelignore` i że jest śledzony przez gita (`git ls-files app/`).
 
+**Klikam „Pobierz z Dukascopy" i nic się nie dzieje.** Kliknij obok **„Sprawdź połączenie"** —
+serwer spróbuje pobrać jeden testowy plik i powie wprost, co się stało: czy archiwum
+odpowiada, ile to trwało, czy zwróciło błąd, czy ruch jest blokowany. To rozstrzyga
+w sekundę, czy problem jest po stronie sieci, czy aplikacji.
+
 **Pobieranie z Dukascopy przerywa się w połowie.** Pojedyncze nieudane godziny nie zatrzymują
 już pobierania — są pomijane i zliczane, a po zakończeniu dostajesz informację, ile ich było.
 Powtórzenie pobrania uzupełni luki, bo reszta jest już w pamięci podręcznej. Komunikat

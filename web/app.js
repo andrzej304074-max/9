@@ -148,6 +148,7 @@ function wireEvents() {
   $('btn-fetch').addEventListener('click', fetchFromNetwork);
   $('btn-duka').addEventListener('click', startDukascopy);
   $('btn-duka-cancel').addEventListener('click', cancelDukascopy);
+  $('btn-duka-probe').addEventListener('click', probeDukascopy);
   $('file-input').addEventListener('change', uploadFile);
   $('btn-export').addEventListener('click', exportCsv);
   $('only-trades').addEventListener('change', () => { state.page = 0; renderTradesTable(); });
@@ -661,6 +662,28 @@ async function startDukascopy() {
   }
 }
 
+/** Pyta serwer, czy w ogóle widzi archiwum Dukascopy, i pokazuje surowy wynik. */
+async function probeDukascopy() {
+  const out = $('duka-probe-result');
+  out.hidden = false;
+  out.classList.remove('hint-limit');
+  out.textContent = 'Sprawdzam…';
+
+  await withBusy('btn-duka-probe', 'Sprawdzam połączenie z archiwum…', async () => {
+    const r = await callApi(`api/dukascopy/probe?instrument=${encodeURIComponent($('duka_instrument').value)}`);
+    if (r.ok) {
+      out.textContent = `Połączenie działa: pobrano plik testowy (${r.bytes} B, `
+        + `${r.ticks.toLocaleString('pl-PL')} ticków) w ${r.ms} ms. `
+        + 'Pobieranie zakresu powinno przejść.';
+      setStatus('Archiwum Dukascopy jest osiągalne z serwera.', 'ok');
+    } else {
+      out.textContent = `${r.error} Adres testowy: ${r.url}`;
+      out.classList.add('hint-limit');
+      setStatus('Serwer nie może pobrać danych z Dukascopy — szczegóły przy przycisku.', 'error');
+    }
+  });
+}
+
 /** Następny dzień po podanej dacie ISO. */
 function nextDay(iso) {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -698,15 +721,28 @@ async function downloadInChunks(body) {
 
       const donePct = Math.round((daysBetween(body.date_from, cursor) / total) * 100);
       $('duka-fill').style.width = `${Math.min(99, donePct)}%`;
-      $('duka-text').textContent = `Pobieram od ${humanDate(cursor)}`
+
+      // Jedna część potrafi zająć kilkadziesiąt sekund. Bez tykającego licznika
+      // wygląda to jak zawieszenie, więc pokazujemy upływ czasu.
+      const label = `Pobieram od ${humanDate(cursor)}`
         + (bars ? ` · ${bars.toLocaleString('pl-PL')} świec` : '')
         + (round ? ` · część ${round + 1}` : '');
+      const since = Date.now();
+      $('duka-text').textContent = label;
+      const ticker = setInterval(() => {
+        $('duka-text').textContent = `${label} · ${Math.round((Date.now() - since) / 1000)} s`;
+      }, 1000);
 
-      const chunk = await callApi('api/dukascopy/chunk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, date_from: cursor, with_header: round === 0 }),
-      });
+      let chunk;
+      try {
+        chunk = await callApi('api/dukascopy/chunk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...body, date_from: cursor, with_header: round === 0 }),
+        });
+      } finally {
+        clearInterval(ticker);
+      }
       parts.push(chunk.csv);
       bars += chunk.bars;
       failed += chunk.failed_hours || 0;

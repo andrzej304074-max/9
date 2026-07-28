@@ -25,6 +25,7 @@ from .dukascopy import (
     download_bars,
     download_window,
     instruments_payload,
+    probe as probe_dukascopy,
 )
 from .engine import run_backtest
 from .fetch import DEFAULT_SYMBOL, fetch_bars, intervals_payload, max_history_days
@@ -415,6 +416,15 @@ def dukascopy_chunk(request: DukascopyChunkRequest) -> dict[str, Any]:
         "complete": outcome.complete,
         "failed_hours": outcome.failed_hours,
     }
+
+
+@app.get("/api/dukascopy/probe")
+def dukascopy_probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, Any]:
+    """Sprawdza jednym żądaniem, czy archiwum Dukascopy jest osiągalne z tego serwera.
+
+    Odpowiada na najtrudniejsze do zdiagnozowania zgłoszenie: „klikam i nic się nie dzieje".
+    """
+    return probe_dukascopy(instrument)
 
 
 @app.get("/api/dukascopy/status/{job_id}")

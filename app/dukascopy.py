@@ -30,16 +30,18 @@ from .csv_loader import Bar, DataError
 BASE_URL = "https://datafeed.dukascopy.com/datafeed"
 USER_AGENT = "Mozilla/5.0 (compatible; gbpusd-backtester/1.0)"
 TICK_STRUCT = struct.Struct(">3I2f")  # czas, ask, bid, wolumen ask, wolumen bid
-TIMEOUT_SECONDS = 30
-MAX_WORKERS = 16
-RETRIES = 3
+# Plik godzinowy to kilkadziesiąt kilobajtów ze zwykłego CDN-u — jeśli nie odpowie w kilka
+# sekund, to znaczy, że nie odpowie w ogóle. Długi timeout przy niedostępnym archiwum
+# zamieniał pobieranie w wielominutowe zawieszenie, zamiast w szybki, czytelny błąd.
+TIMEOUT_SECONDS = 8
+MAX_WORKERS = 24
+RETRIES = 2
 
 # Niedzielny handel zaczyna się dopiero wieczorem — wcześniejsze pliki są zawsze puste.
 SUNDAY_OPEN_HOUR = 21
 
-# Co ile dni sprawdzamy budżet czasu. Mniejsza partia to dokładniejsze trafianie
-# w limit, większa — lepsze wykorzystanie równoległości.
-DAYS_PER_BATCH = 3
+# Doba to 24 pliki, czyli jedna runda przy tylu wątkach — dzięki temu budżet czasu
+# sprawdzamy często, a `covered_to` zawsze wskazuje dzień domknięty w całości.
 
 # Skala cen: liczba miejsc po przecinku w kwotowaniu danego instrumentu.
 INSTRUMENTS: dict[str, dict[str, object]] = {
@@ -182,9 +184,51 @@ def _fetch_hour(url: str) -> Optional[bytes]:
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
         if attempt < RETRIES - 1:
-            time.sleep(0.5 * (2**attempt))
+            time.sleep(0.3)
 
     return None
+
+
+def probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, object]:
+    """Pobiera jeden znany plik godzinowy i opisuje, co się stało.
+
+    Służy do rozstrzygania sytuacji „kliknąłem i nic się nie dzieje": mówi wprost, czy
+    archiwum jest w ogóle osiągalne z tego środowiska, jak szybko odpowiada i co zwraca.
+    Nigdy nie rzuca wyjątkiem — diagnostyka, która sama się wywraca, jest bezużyteczna.
+    """
+    # Wtorek, środek sesji londyńskiej — godzina, która na pewno ma notowania.
+    when = datetime(2024, 1, 2, 10, tzinfo=timezone.utc)
+    url = hour_url(instrument, when)
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    started = time.monotonic()
+
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            payload = response.read()
+        elapsed = round((time.monotonic() - started) * 1000)
+        try:
+            ticks = len(decode_bi5(payload, when, instrument_scale(instrument)))
+        except DataError as exc:
+            return {"ok": False, "url": url, "ms": elapsed, "bytes": len(payload),
+                    "error": f"Plik pobrany, ale nie daje się rozpakować: {exc}"}
+        return {
+            "ok": ticks > 0,
+            "url": url,
+            "ms": elapsed,
+            "bytes": len(payload),
+            "ticks": ticks,
+            "error": None if ticks else "Plik pobrany, ale pusty — archiwum odpowiada inaczej niż zwykle.",
+        }
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
+                "status": exc.code,
+                "error": f"Archiwum odpowiedziało kodem HTTP {exc.code}."
+                         + (" Ten adres powinien istnieć, więc prawdopodobnie dostawca blokuje "
+                            "ruch z tego serwera." if exc.code in (403, 429) else "")}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
+                "error": f"Brak połączenia z archiwum ({exc}). "
+                         "Środowisko może blokować ruch wychodzący do datafeed.dukascopy.com."}
 
 
 def hours_in_range(start: date, end: date) -> list[datetime]:
@@ -288,33 +332,38 @@ def download_window(
         return decode_bi5(payload, when, scale)
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        for batch_start in range(0, len(days), DAYS_PER_BATCH):
+        for index, day in enumerate(days):
             if cancelled is not None and cancelled():
                 raise DataError("Pobieranie zostało przerwane.")
-            # Budżet sprawdzamy przed partią, ale nigdy przed pierwszą — inaczej
-            # przy ciasnym limicie nie pobralibyśmy niczego i nie było się jak posunąć.
-            if batch_start and deadline is not None and time.monotonic() > deadline:
+            # Budżet sprawdzamy przed każdą dobą, ale nigdy przed pierwszą — inaczej przy
+            # ciasnym limicie nie pobralibyśmy niczego i nie było się jak posunąć dalej.
+            if index and deadline is not None and time.monotonic() > deadline:
                 result.stopped_early = True
                 break
 
-            batch = days[batch_start:batch_start + DAYS_PER_BATCH]
-            hours = [h for day in batch for h in hours_in_range(day, day)]
-            for outcome in pool.map(load, hours):
+            failed_today = 0
+            for outcome in pool.map(load, hours_in_range(day, day)):
                 attempted += 1
                 if outcome is None:
+                    failed_today += 1
                     result.failed_hours += 1
                 else:
                     ticks.extend(outcome)
                     result.hours_done += 1
-            result.covered_to = batch[-1]
+
+            # Doba, z której nie przyszedł ani jeden plik, oznacza problem systemowy,
+            # a nie pecha. Nie ma sensu mielić kolejnych tysięcy godzin, żeby to potwierdzić.
+            if failed_today and failed_today == len(hours_in_range(day, day)):
+                raise DataError(
+                    "Nie udało się pobrać z Dukascopy ani jednego pliku "
+                    f"({failed_today} prób dla dnia {day.isoformat()}). "
+                    "Użyj przycisku Sprawdź połączenie — powie, czy serwer w ogóle widzi "
+                    "datafeed.dukascopy.com. W razie blokady wgraj plik CSV ręcznie."
+                )
+
+            result.covered_to = day
             if progress is not None:
                 progress(result.hours_done + result.failed_hours, result.hours_total)
-
-    if attempted and result.failed_hours == attempted:
-        raise DataError(
-            "Nie udało się pobrać z Dukascopy ani jednego pliku. "
-            "Sprawdź połączenie z internetem lub ustawienia proxy, albo wgraj plik CSV ręcznie."
-        )
 
     result.bars = ticks_to_bars(ticks, interval_minutes, price)
     return result
