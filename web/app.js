@@ -165,7 +165,7 @@ function wireEvents() {
 
   ['sl_method', 'position_mode', 'sizing_mode', 'direction_mode', 'direction_source',
    'breakout_window_mode', 'breakout_retry_mode', 'breakout_trigger',
-   'breakout_levels'].forEach((id) => {
+   'breakout_levels', 'breakout_stop_levels'].forEach((id) => {
     $(id).addEventListener('change', syncConditionalFields);
   });
 
@@ -216,7 +216,7 @@ function applyConfig(cfg) {
    'risk_percent', 'lookback_days', 'date_from', 'date_to',
    'breakout_window_mode', 'breakout_hours', 'breakout_trigger', 'breakout_buffer_pips',
    'breakout_retry_mode', 'breakout_max_per_day', 'breakout_both_sides',
-   'breakout_levels'].forEach((id) => set(id, cfg[id]));
+   'breakout_levels', 'breakout_stop_levels'].forEach((id) => set(id, cfg[id]));
 
   const active = new Set(cfg.weekdays || [0, 1, 2, 3, 4]);
   document.querySelectorAll('.weekday-toggle').forEach((input) => {
@@ -250,6 +250,7 @@ function collectConfig() {
     breakout_max_per_day: num('breakout_max_per_day', 5),
     breakout_both_sides: $('breakout_both_sides').value,
     breakout_levels: $('breakout_levels').value,
+    breakout_stop_levels: $('breakout_stop_levels').value,
     timezone: $('timezone').value,
     signal_hour: signalHour,
     signal_minute: signalMinute,
@@ -361,17 +362,27 @@ function syncConditionalFields() {
       + 'ale tutaj wyjdzie spadkowa — cena została odrzucona od góry.',
   }[$('direction_source').value] || '';
 
+  $('breakout-stop-hint').textContent = {
+    same: 'Stop ląduje na tej samej granicy co wejście, tylko po przeciwnej stronie.',
+    range: 'Stop za pełnym wychyleniem świecy — dalej od ceny, więc luźniejszy, '
+      + 'ale przy stałym RR take profit też odsuwa się dalej.',
+    body: 'Stop na krańcu korpusu — bliżej ceny, więc ciaśniejszy. Można wejść na wybiciu '
+      + 'pełnego wychylenia, a stop trzymać tuż przy korpusie.',
+  }[$('breakout_stop_levels').value] || '';
+
   $('breakout-levels-hint').textContent = {
     range: 'Cena musi wyjść poza szczyt albo dołek świecy, czyli poza jej knoty.',
     body: 'Cena musi wyjść poza otwarcie albo zamknięcie. Te poziomy leżą bliżej, '
       + 'więc wybicia padają częściej i wcześniej, a stop jest ciaśniejszy.',
   }[$('breakout_levels').value] || '';
 
-  $('sl-method-hint').textContent = $('sl_method').value === 'candle_range'
-    ? (state.strategy === 'range_breakout'
+  $('sl-method-hint').textContent = {
+    candle_range: state.strategy === 'range_breakout'
       ? 'Stop ląduje na przeciwnej granicy zakresu — tej, od której cena się odbiła.'
-      : 'Stop ląduje na dołku świecy (dla longa) albo na jej szczycie (dla shorta).')
-    : '';
+      : 'Stop ląduje na dołku świecy (dla longa) albo na jej szczycie (dla shorta).',
+    candle_body: 'Stop ląduje na krańcu korpusu zamiast na końcu knota — bliżej ceny, '
+      + 'więc ciaśniejszy, a przy stałym RR take profit odpowiednio bliżej.',
+  }[$('sl_method').value] || '';
 
   const slMethod = $('sl_method').value;
   document.querySelectorAll('[data-when-sl]').forEach((el) => {

@@ -527,3 +527,64 @@ def test_an_unknown_level_choice_is_rejected():
 
     with pytest.raises(ConfigError, match="Granice wybicia"):
         BacktestConfig(breakout_levels="cos_innego").validate()
+
+
+# --- stop odczepiony od granicy wybicia ---------------------------------------------
+
+
+def wide_wicks() -> list[Bar]:
+    """Korpus 1,2000–1,2010, pełne wychylenia 1,1980–1,2030 — knoty są szerokie."""
+    return [
+        bar("08:00", 1.2000, 1.2030, 1.1980, 1.2010),
+        quiet("08:15", 1.2010),
+        bar("08:30", 1.2025, 1.2040, 1.2024, 1.2035),   # przebija szczyt wychylenia
+        quiet("08:45", 1.2035),
+    ]
+
+
+def test_stop_follows_the_broken_boundary_by_default():
+    trade = played(run(wide_wicks()))[0]
+    assert trade.entry_price == pytest.approx(1.2030)    # wejście na szczycie wychylenia
+    assert trade.stop_loss == pytest.approx(1.1980)      # stop na dołku wychylenia
+
+
+def test_stop_can_sit_on_the_body_edge_while_entry_uses_the_full_swing():
+    """Wejście na pełnym wychyleniu, ale stop ciasno przy korpusie."""
+    trade = played(run(wide_wicks(), breakout_stop_levels="body"))[0]
+    assert trade.entry_price == pytest.approx(1.2030)
+    assert trade.stop_loss == pytest.approx(1.2000)      # otwarcie, nie dołek knota
+    assert trade.risk_distance == pytest.approx(0.0030)  # zamiast 0,0050
+
+
+def test_stop_can_sit_behind_the_full_swing_while_entry_uses_the_body():
+    """Odwrotnie: wejście wcześnie na korpusie, stop dopiero za knotem."""
+    bars = [
+        bar("08:00", 1.2000, 1.2030, 1.1980, 1.2010),
+        quiet("08:15", 1.2010),
+        bar("08:30", 1.2011, 1.2018, 1.2009, 1.2016),   # ponad korpusem, poniżej szczytu
+        quiet("08:45", 1.2016),
+    ]
+    trade = played(run(bars, breakout_levels="body", breakout_stop_levels="range"))[0]
+    assert trade.entry_price == pytest.approx(1.2010)    # kraniec korpusu
+    assert trade.stop_loss == pytest.approx(1.1980)      # dołek wychylenia
+    assert trade.risk_distance == pytest.approx(0.0030)
+
+
+def test_tighter_stop_pulls_the_target_closer():
+    """Przy stałym RR ciaśniejszy stop oznacza bliższy take profit."""
+    szeroki = played(run(wide_wicks()))[0]
+    ciasny = played(run(wide_wicks(), breakout_stop_levels="body"))[0]
+    assert ciasny.take_profit < szeroki.take_profit
+    assert (ciasny.take_profit - ciasny.entry_price) / ciasny.risk_distance == pytest.approx(4.0)
+
+
+def test_stop_level_choice_applies_downwards_too():
+    bars = [
+        bar("08:00", 1.2010, 1.2030, 1.1980, 1.2000),
+        quiet("08:15", 1.2000),
+        bar("08:30", 1.1979, 1.1981, 1.1970, 1.1975),   # przebija dołek wychylenia
+        quiet("08:45", 1.1975),
+    ]
+    trade = played(run(bars, breakout_stop_levels="body"))[0]
+    assert trade.direction == SHORT
+    assert trade.stop_loss == pytest.approx(1.2010)      # górny kraniec korpusu

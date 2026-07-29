@@ -48,8 +48,16 @@ DIRECTION_SOURCES = {
 
 # Z czego brać granice, które cena ma przebić w strategii wybicia.
 BREAKOUT_LEVELS = {
-    "range": "Szczyt i dołek świecy (z knotami)",
-    "body": "Krańce korpusu (otwarcie i zamknięcie)",
+    "range": "Pełne wychylenia — szczyt i dołek świecy",
+    "body": "Krańce korpusu — otwarcie i zamknięcie",
+}
+
+# Gdzie ląduje stop loss po wybiciu. Można go odczepić od granicy, która puściła:
+# wejść na ciasnym korpusie, a stop postawić dopiero za pełnym wychyleniem — albo odwrotnie.
+BREAKOUT_STOP_LEVELS = {
+    "same": "Tam, gdzie druga granica wybicia",
+    "range": "Za pełnym wychyleniem (szczyt / dołek)",
+    "body": "Na krańcu korpusu (otwarcie / zamknięcie)",
 }
 
 DIRECTION_MODES = {
@@ -71,7 +79,8 @@ ENTRY_MODES = {
 }
 
 SL_METHODS = {
-    "candle_range": "Zakres świecy sygnałowej",
+    "candle_range": "Pełne wychylenia świecy (szczyt / dołek)",
+    "candle_body": "Krańce korpusu (otwarcie / zamknięcie)",
     "fixed_pips": "Stała liczba pipsów",
     "percent": "Procent ceny wejścia",
 }
@@ -136,6 +145,7 @@ class BacktestConfig:
     breakout_max_per_day: int = 5
     breakout_both_sides: str = "open_proximity"
     breakout_levels: str = "range"
+    breakout_stop_levels: str = "same"
 
     # --- logika pozycji ---
     entry_mode: str = "next_open"
@@ -215,6 +225,7 @@ class BacktestConfig:
         _choice(self.breakout_retry_mode, BREAKOUT_RETRY_MODES, "Powtórki wybicia")
         _choice(self.breakout_both_sides, BREAKOUT_BOTH_SIDES, "Wybicie obustronne")
         _choice(self.breakout_levels, BREAKOUT_LEVELS, "Granice wybicia")
+        _choice(self.breakout_stop_levels, BREAKOUT_STOP_LEVELS, "Poziom stop lossa")
         _choice(self.direction_source, DIRECTION_SOURCES, "Źródło kierunku")
         _choice(self.direction_mode, DIRECTION_MODES, "Tryb kierunku")
         _choice(self.doji_mode, DOJI_MODES, "Zachowanie na doji")
@@ -310,4 +321,5 @@ def options_payload() -> dict[str, dict[str, str]]:
         "breakout_retry_mode": BREAKOUT_RETRY_MODES,
         "breakout_both_sides": BREAKOUT_BOTH_SIDES,
         "breakout_levels": BREAKOUT_LEVELS,
+        "breakout_stop_levels": BREAKOUT_STOP_LEVELS,
     }

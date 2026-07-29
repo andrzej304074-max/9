@@ -260,7 +260,8 @@ Widoczne po przełączeniu na drugą strategię:
 | Co uznajemy za przebicie | **Dotknięcie poziomu** — wystarczy, że cena sięgnie granicy; wejście po cenie tego poziomu, tak jak zadziałałoby zlecenie stop. **Zamknięcie poza zakresem** — świeca musi się zamknąć poza granicą; odfiltrowuje przekłucia knotem, ale wchodzi później i dalej, więc ryzyko na transakcję rośnie. |
 | Bufor wybicia | Ile pipsów cena musi wyjść poza zakres, żeby wybicie się liczyło. Filtruje płytkie przekłucia. 0 = bez filtra. |
 | Gdy jedna świeca przebija obie granice | Z samego OHLC nie wynika, który poziom padł pierwszy. Domyślnie zakładamy, że **bliższy otwarciu** tej świecy (cena rusza od otwarcia). Można też wymusić stronę albo pominąć taki dzień jako nierozstrzygalny. |
-| Co cena ma przebić | **Szczyt i dołek świecy** (domyślnie) — pełny zakres razem z knotami. **Krańce korpusu** — otwarcie i zamknięcie; te poziomy leżą bliżej, więc wybicia padają częściej i wcześniej, a stop jest ciaśniejszy. |
+| Co cena ma przebić | **Pełne wychylenia** (domyślnie) — szczyt i dołek świecy, razem z knotami. **Krańce korpusu** — otwarcie i zamknięcie; leżą bliżej, więc wybicia padają częściej i wcześniej. |
+| Gdzie postawić stop loss | Niezależnie od granicy wejścia. **Tam, gdzie druga granica** (domyślnie) — jak dotąd. **Za pełnym wychyleniem** albo **na krańcu korpusu** — pozwala wejść wcześnie na ciasnym korpusie, a stop trzymać dopiero za knotem, albo odwrotnie: wejść na pełnym wybiciu i trzymać ciasny stop przy korpusie. |
 | Powtórki w ciągu dnia | **Jedna transakcja dziennie** (domyślnie), **dopuść wybicie w drugą stronę** po zamknięciu pierwszej pozycji, albo **każde kolejne wybicie** aż do limitu dziennego. Kolejna próba nigdy nie startuje przed zamknięciem poprzedniej. |
 
 Przy tej strategii metoda stop lossa **„zakres świecy"** oznacza przeciwną granicę zakresu —

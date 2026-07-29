@@ -213,9 +213,18 @@ def _resolve_direction(
     return _apply_direction_mode(cfg, base)
 
 
-def _risk_distance(cfg: BacktestConfig, direction: int, entry: float, low: float, high: float) -> float:
+def _risk_distance(
+    cfg: BacktestConfig, direction: int, entry: float, low: float, high: float,
+    body_low: Optional[float] = None, body_high: Optional[float] = None,
+) -> float:
     if cfg.sl_method == "candle_range":
         raw = (entry - low) if direction == LONG else (high - entry)
+    elif cfg.sl_method == "candle_body":
+        # Krańce korpusu leżą bliżej ceny niż knoty, więc stop jest ciaśniejszy,
+        # a przy stałym stosunku RR take profit odpowiednio bliżej.
+        lo = low if body_low is None else body_low
+        hi = high if body_high is None else body_high
+        raw = (entry - lo) if direction == LONG else (hi - entry)
     elif cfg.sl_method == "fixed_pips":
         raw = cfg.sl_pips * cfg.pip_size
     else:  # percent
@@ -314,7 +323,10 @@ def _build_trades_direction(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) 
         sim_start = i1
 
         entry_price = entry_raw + direction * cfg.spread_price
-        risk = _risk_distance(cfg, direction, entry_price, s_low, s_high)
+        risk = _risk_distance(
+            cfg, direction, entry_price, s_low, s_high,
+            body_low=min(s_open, s_close), body_high=max(s_open, s_close),
+        )
         if risk <= 0:
             trade.skip_reason = "dystans Stop Lossa wyszedł zerowy lub ujemny"
             continue
@@ -390,7 +402,7 @@ def _breakout_risk_distance(
     stop ląduje dokładnie na przeciwnej granicy świecy, a przy grze przeciwnej — tyle samo
     po drugiej stronie wejścia.
     """
-    if cfg.sl_method == "candle_range":
+    if cfg.sl_method in ("candle_range", "candle_body"):
         raw = (entry - r_low) if side == "up" else (r_high - entry)
     elif cfg.sl_method == "fixed_pips":
         raw = cfg.sl_pips * cfg.pip_size
@@ -478,7 +490,15 @@ def _build_trades_breakout(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -
                 continue
 
             entry_price = entry_raw + direction * cfg.spread_price
-            risk = _breakout_risk_distance(cfg, side, entry_price, edge_low, edge_high)
+            # Stop nie musi lądować tam, gdzie leży druga granica wybicia — można wejść
+            # na ciasnym korpusie, a stop postawić dopiero za pełnym wychyleniem.
+            if cfg.breakout_stop_levels == "range":
+                stop_low, stop_high = r_low, r_high
+            elif cfg.breakout_stop_levels == "body":
+                stop_low, stop_high = min(r_open, r_close), max(r_open, r_close)
+            else:
+                stop_low, stop_high = edge_low, edge_high
+            risk = _breakout_risk_distance(cfg, side, entry_price, stop_low, stop_high)
             if risk <= 0:
                 trade.skip_reason = "dystans Stop Lossa wyszedł zerowy lub ujemny"
                 blocked.add(side)

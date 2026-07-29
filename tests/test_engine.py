@@ -536,3 +536,27 @@ def test_all_three_sources_can_give_three_readings():
             if t.is_executed()][0].direction == LONG
     assert [t for t in run_with(bars, direction_source="range").trades
             if t.is_executed()][0].direction == SHORT
+
+
+def test_body_stop_is_tighter_than_the_wick_stop():
+    """Strategia 1 też dostaje wybór: stop na knocie albo na krańcu korpusu."""
+    bars = signal_candle(1.2000, 1.2040, 1.1960, 1.2020)   # dolny knot sięga 40 pipsów niżej
+    z_knota = [t for t in run_with(bars).trades if t.is_executed()][0]
+    z_korpusu = [t for t in run_with(bars, sl_method="candle_body").trades if t.is_executed()][0]
+
+    assert z_knota.stop_loss == pytest.approx(1.1960)      # dołek świecy
+    assert z_korpusu.stop_loss == pytest.approx(1.2000)    # otwarcie — kraniec korpusu
+    assert z_korpusu.risk_distance < z_knota.risk_distance
+
+
+def test_body_stop_keeps_the_reward_ratio():
+    bars = signal_candle(1.2000, 1.2040, 1.1960, 1.2020)
+    t = [x for x in run_with(bars, sl_method="candle_body").trades if x.is_executed()][0]
+    assert (t.take_profit - t.entry_price) / t.risk_distance == pytest.approx(4.0)
+
+
+def test_body_stop_works_for_shorts():
+    bars = signal_candle(1.2020, 1.2060, 1.1990, 1.2000)   # czerwona świeca -> short
+    t = [x for x in run_with(bars, sl_method="candle_body").trades if x.is_executed()][0]
+    assert t.direction == SHORT
+    assert t.stop_loss == pytest.approx(1.2020)            # otwarcie, nie szczyt 1,2060
