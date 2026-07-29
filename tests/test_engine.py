@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.config import BacktestConfig
+from app.config import BacktestConfig, ConfigError
 from app.engine import (
     EXIT_OPEN,
     EXIT_REPLACED,
@@ -406,3 +406,94 @@ def test_signal_close_entry_mode():
     bars = [GREEN] + flat_bars("2024-01-02", "08:15", 6, 1.2005)
     trade = run(bars, entry_mode="signal_close").trades[0]
     assert trade.entry_price == pytest.approx(GREEN.close)
+
+
+# --- skąd czytany jest kierunek świecy ----------------------------------------------
+
+
+def signal_candle(o, h, l, c, day="2024-01-02"):
+    """Jedna świeca sygnałowa 8:00–8:15 plus spokojne świece na resztę dnia."""
+    def bar(hhmm, bo, bh, bl, bc):
+        ts = datetime.strptime(f"{day} {hhmm}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        return Bar(ts=ts, open=bo, high=bh, low=bl, close=bc, volume=0.0)
+
+    bars = [bar("08:00", o, h, l, c)]
+    price = c
+    for i in range(1, 40):
+        hh, mm = 8 + (i * 15) // 60, (i * 15) % 60
+        bars.append(bar(f"{hh:02d}:{mm:02d}", price, price + 0.0002, price - 0.0002, price))
+    return bars
+
+
+def run_with(bars, **overrides):
+    base = {"timezone": "UTC", "initial_capital": 10000.0, "leverage": 1.0}
+    base.update(overrides)
+    cfg = BacktestConfig(**base)
+    cfg.validate()
+    outcome, _ = run_backtest(bars, cfg)
+    return outcome
+
+
+def test_body_is_the_default_source():
+    assert BacktestConfig().direction_source == "body"
+
+
+def test_body_reads_open_versus_close():
+    """Zielony korpus daje longa niezależnie od tego, gdzie sięgały knoty."""
+    bars = signal_candle(1.2000, 1.2050, 1.1990, 1.2010)      # zamknięcie powyżej otwarcia
+    trade = [t for t in run_with(bars).trades if t.is_executed()][0]
+    assert trade.direction == LONG
+
+
+def test_range_reads_close_against_the_midpoint():
+    bars = signal_candle(1.2000, 1.2050, 1.1990, 1.2010)      # środek zakresu to 1.2020
+    trade = [t for t in run_with(bars, direction_source="range").trades if t.is_executed()][0]
+    assert trade.direction == SHORT      # zamknięcie poniżej środka mimo zielonego korpusu
+
+
+def test_the_two_sources_can_disagree():
+    """Sedno różnicy: świeca z długim górnym knotem jest zielona, ale cena została
+    odrzucona od góry i zamknęła się w dolnej połowie zakresu."""
+    bars = signal_candle(1.2000, 1.2080, 1.1995, 1.2005)
+
+    z_korpusu = [t for t in run_with(bars).trades if t.is_executed()][0]
+    z_zakresu = [t for t in run_with(bars, direction_source="range").trades if t.is_executed()][0]
+
+    assert z_korpusu.direction == LONG
+    assert z_zakresu.direction == SHORT
+
+
+def test_the_two_sources_agree_on_a_clean_candle():
+    """Świeca bez wyraźnych knotów daje ten sam kierunek w obu trybach."""
+    bars = signal_candle(1.2000, 1.2042, 1.1998, 1.2040)
+    assert [t for t in run_with(bars).trades if t.is_executed()][0].direction == LONG
+    assert [t for t in run_with(bars, direction_source="range").trades
+            if t.is_executed()][0].direction == LONG
+
+
+def test_close_exactly_at_the_midpoint_counts_as_undecided():
+    bars = signal_candle(1.2000, 1.2040, 1.2000, 1.2020)       # środek zakresu = zamknięcie
+    outcome = run_with(bars, direction_source="range")
+    assert [t for t in outcome.trades if t.is_executed()] == []
+    assert "w środku zakresu" in outcome.trades[0].skip_reason
+
+
+def test_undecided_candle_respects_the_doji_setting():
+    bars = signal_candle(1.2000, 1.2040, 1.2000, 1.2020)
+    trade = [t for t in run_with(bars, direction_source="range", doji_mode="long").trades
+             if t.is_executed()][0]
+    assert trade.direction == LONG
+
+
+def test_range_source_still_obeys_the_direction_mode():
+    """Tryb kierunku nakłada się na oba źródła tak samo."""
+    bars = signal_candle(1.2000, 1.2080, 1.1995, 1.2005)      # z zakresu wychodzi short
+    trade = [t for t in run_with(bars, direction_source="range", direction_mode="invert").trades
+             if t.is_executed()][0]
+    assert trade.direction == LONG
+
+
+def test_an_unknown_source_is_rejected():
+    cfg = BacktestConfig(direction_source="cos_innego")
+    with pytest.raises(ConfigError, match="Źródło kierunku"):
+        cfg.validate()

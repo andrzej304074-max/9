@@ -130,6 +130,11 @@
             <input type="number" id="candle_minutes" name="candle_minutes" min="1" max="1440" step="1">
           </div>
         </div>
+        <div class="field" data-strategy-only="candle_direction">
+          <label for="direction_source">Z czego czytać kierunek świecy</label>
+          <select id="direction_source" name="direction_source"></select>
+          <p class="hint" id="direction-source-hint"></p>
+        </div>
         <div class="field">
           <label for="direction_mode">Kierunek pozycji</label>
           <select id="direction_mode" name="direction_mode"></select>

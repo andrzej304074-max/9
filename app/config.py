@@ -40,6 +40,11 @@ BREAKOUT_BOTH_SIDES = {
     "skip": "Pomiń — nie da się rozstrzygnąć",
 }
 
+DIRECTION_SOURCES = {
+    "body": "Korpus — otwarcie kontra zamknięcie",
+    "range": "Cały zakres — zamknięcie kontra środek świecy",
+}
+
 DIRECTION_MODES = {
     "follow": "Podążaj za świecą",
     "invert": "Odwróć sygnał",
@@ -109,6 +114,7 @@ class BacktestConfig:
     signal_hour: int = 8
     signal_minute: int = 0
     candle_minutes: int = 15
+    direction_source: str = "body"
     direction_mode: str = "follow"
     doji_mode: str = "skip"
 
@@ -200,6 +206,7 @@ class BacktestConfig:
         _choice(self.breakout_trigger, BREAKOUT_TRIGGERS, "Wyzwalacz wybicia")
         _choice(self.breakout_retry_mode, BREAKOUT_RETRY_MODES, "Powtórki wybicia")
         _choice(self.breakout_both_sides, BREAKOUT_BOTH_SIDES, "Wybicie obustronne")
+        _choice(self.direction_source, DIRECTION_SOURCES, "Źródło kierunku")
         _choice(self.direction_mode, DIRECTION_MODES, "Tryb kierunku")
         _choice(self.doji_mode, DOJI_MODES, "Zachowanie na doji")
         _choice(self.entry_mode, ENTRY_MODES, "Moment wejścia")
@@ -281,6 +288,7 @@ def options_payload() -> dict[str, dict[str, str]]:
     """Słowniki opcji dla UI — front nie musi ich duplikować."""
     return {
         "strategy": STRATEGIES,
+        "direction_source": DIRECTION_SOURCES,
         "direction_mode": DIRECTION_MODES,
         "doji_mode": DOJI_MODES,
         "entry_mode": ENTRY_MODES,

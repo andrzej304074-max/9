@@ -246,6 +246,7 @@ Przycisk **„Dane demo"** ładuje wbudowany plik z pół roku świec 15-minutow
 |---|---|
 | Początek świecy | Godzina otwarcia świecy sygnałowej (domyślnie 08:00). |
 | Długość | Ile minut trwa świeca sygnałowa (domyślnie 15). |
+| Z czego czytać kierunek świecy | **Korpus** (domyślnie) patrzy tylko na otwarcie i zamknięcie, czyli na kolorową część świecy — knoty są pomijane. **Cały zakres** porównuje zamknięcie ze środkiem między szczytem a dołkiem. Świeca z długim górnym knotem bywa formalnie zielona, choć cena została odrzucona od góry; ten tryb potraktuje ją jako spadkową. Na danych demo oba tryby oceniają przeciwnie 16% dni. Dotyczy tylko strategii 1. |
 | Kierunek pozycji | `Podążaj za świecą` = pierwotna logika. Można ją odwrócić albo ograniczyć do samych longów lub shortów. |
 | Gdy świeca bez zmiany | Co zrobić, gdy otwarcie równa się zamknięciu (doji). Tylko strategia 1. |
 

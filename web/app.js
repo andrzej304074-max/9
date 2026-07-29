@@ -163,7 +163,7 @@ function wireEvents() {
     renderTradesTable();
   });
 
-  ['sl_method', 'position_mode', 'sizing_mode', 'direction_mode',
+  ['sl_method', 'position_mode', 'sizing_mode', 'direction_mode', 'direction_source',
    'breakout_window_mode', 'breakout_retry_mode', 'breakout_trigger'].forEach((id) => {
     $(id).addEventListener('change', syncConditionalFields);
   });
@@ -209,7 +209,7 @@ function applyConfig(cfg) {
   set('close_time', pad2(cfg.close_time_hour) + ':' + pad2(cfg.close_time_minute));
   set('breakout_until', pad2(cfg.breakout_until_hour) + ':' + pad2(cfg.breakout_until_minute));
 
-  ['candle_minutes', 'direction_mode', 'doji_mode', 'entry_mode', 'rr_ratio', 'sl_method',
+  ['candle_minutes', 'direction_source', 'direction_mode', 'doji_mode', 'entry_mode', 'rr_ratio', 'sl_method',
    'sl_pips', 'sl_percent', 'sl_multiplier', 'pip_size', 'spread_pips', 'tie_break',
    'position_mode', 'close_after_days', 'initial_capital', 'leverage', 'sizing_mode',
    'risk_percent', 'lookback_days', 'date_from', 'date_to',
@@ -251,6 +251,7 @@ function collectConfig() {
     signal_hour: signalHour,
     signal_minute: signalMinute,
     candle_minutes: num('candle_minutes', 15),
+    direction_source: $('direction_source').value,
     direction_mode: $('direction_mode').value,
     doji_mode: $('doji_mode').value,
     entry_mode: $('entry_mode').value,
@@ -347,6 +348,13 @@ function syncConditionalFields() {
     opposite: 'Po zamknięciu pierwszej pozycji łapiemy jeszcze wybicie przeciwnej granicy.',
     unlimited: 'Każde kolejne wybicie otwiera nową pozycję, aż do limitu dziennego.',
   }[$('breakout_retry_mode').value] || '';
+
+  $('direction-source-hint').textContent = {
+    body: 'Liczy się tylko kolorowy korpus — otwarcie kontra zamknięcie. Knoty są pomijane.',
+    range: 'Liczy się położenie zamknięcia względem środka między szczytem a dołkiem. '
+      + 'Świeca z długim górnym knotem i zamknięciem przy dole bywa formalnie zielona, '
+      + 'ale tutaj wyjdzie spadkowa — cena została odrzucona od góry.',
+  }[$('direction_source').value] || '';
 
   $('sl-method-hint').textContent = $('sl_method').value === 'candle_range'
     ? (state.strategy === 'range_breakout'

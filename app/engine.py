@@ -173,14 +173,32 @@ def _apply_direction_mode(cfg: BacktestConfig, base: int) -> tuple[int, Optional
     return (SHORT, None) if base == SHORT else (0, "sygnał długi pominięty (tryb: tylko short)")
 
 
-def _resolve_direction(cfg: BacktestConfig, candle_open: float, candle_close: float) -> tuple[int, Optional[str]]:
-    if candle_close > candle_open:
+def _resolve_direction(
+    cfg: BacktestConfig, candle_open: float, candle_high: float,
+    candle_low: float, candle_close: float,
+) -> tuple[int, Optional[str]]:
+    """Ustala kierunek sygnału ze świecy — z korpusu albo z całego zakresu.
+
+    **Korpus** patrzy wyłącznie na otwarcie i zamknięcie, czyli na kolorową część świecy;
+    knoty są pomijane. To klasyczna definicja „zielona / czerwona”.
+
+    **Cały zakres** porównuje zamknięcie ze środkiem między szczytem a dołkiem. Świeca
+    z długim górnym knotem i zamknięciem przy dole bywa formalnie zielona, choć cena
+    została odrzucona od góry — ten tryb potraktuje ją jako spadkową.
+    """
+    if cfg.direction_source == "range":
+        midpoint = (candle_high + candle_low) / 2.0
+        higher, lower, tie = candle_close > midpoint, candle_close < midpoint, "w środku zakresu"
+    else:
+        higher, lower, tie = candle_close > candle_open, candle_close < candle_open, "bez zmiany (doji)"
+
+    if higher:
         base = LONG
-    elif candle_close < candle_open:
+    elif lower:
         base = SHORT
     else:
         if cfg.doji_mode == "skip":
-            return 0, "świeca sygnałowa bez zmiany (doji)"
+            return 0, f"świeca sygnałowa {tie}"
         base = LONG if cfg.doji_mode == "long" else SHORT
 
     return _apply_direction_mode(cfg, base)
@@ -265,7 +283,7 @@ def _build_trades_direction(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) 
         trade.signal_open, trade.signal_high = s_open, s_high
         trade.signal_low, trade.signal_close = s_low, s_close
 
-        direction, reason = _resolve_direction(cfg, s_open, s_close)
+        direction, reason = _resolve_direction(cfg, s_open, s_high, s_low, s_close)
         if direction == 0:
             trade.skip_reason = reason
             continue
