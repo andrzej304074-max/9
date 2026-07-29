@@ -497,3 +497,42 @@ def test_an_unknown_source_is_rejected():
     cfg = BacktestConfig(direction_source="cos_innego")
     with pytest.raises(ConfigError, match="Źródło kierunku"):
         cfg.validate()
+
+
+def test_swing_reads_which_side_reached_further():
+    """Górne wychylenie 30 pipsów, dolne 5 — mimo czerwonego korpusu wychodzi long."""
+    bars = signal_candle(1.2000, 1.2030, 1.1995, 1.1998)
+    z_korpusu = [t for t in run_with(bars).trades if t.is_executed()][0]
+    z_wychylen = [t for t in run_with(bars, direction_source="swing").trades if t.is_executed()][0]
+
+    assert z_korpusu.direction == SHORT      # zamknięcie poniżej otwarcia
+    assert z_wychylen.direction == LONG      # ale w górę cena zaszła sześć razy dalej
+
+
+def test_swing_ignores_where_the_candle_closed():
+    """Dwie świece o tym samym zasięgu wychyleń, różnym zamknięciu — ten sam kierunek."""
+    a = signal_candle(1.2000, 1.2030, 1.1995, 1.2025)
+    b = signal_candle(1.2000, 1.2030, 1.1995, 1.1998)
+    kier = lambda bars: [t for t in run_with(bars, direction_source="swing").trades
+                         if t.is_executed()][0].direction
+    assert kier(a) == kier(b) == LONG
+
+
+def test_equal_swings_count_as_undecided():
+    bars = signal_candle(1.2000, 1.2020, 1.1980, 1.2010)     # oba wychylenia po 20 pipsów
+    outcome = run_with(bars, direction_source="swing")
+    assert [t for t in outcome.trades if t.is_executed()] == []
+    assert "równymi wychyleniami" in outcome.trades[0].skip_reason
+
+
+def test_all_three_sources_can_give_three_readings():
+    """Świeca dobrana tak, by każde kryterium widziało co innego."""
+    bars = signal_candle(1.2000, 1.2040, 1.1990, 1.2005)
+    # korpus: zielony (1.2005 > 1.2000)
+    # wychylenia: górne 40 pipsów kontra dolne 10 -> w górę
+    # zakres: środek 1.2015, zamknięcie niżej -> w dół
+    assert [t for t in run_with(bars).trades if t.is_executed()][0].direction == LONG
+    assert [t for t in run_with(bars, direction_source="swing").trades
+            if t.is_executed()][0].direction == LONG
+    assert [t for t in run_with(bars, direction_source="range").trades
+            if t.is_executed()][0].direction == SHORT

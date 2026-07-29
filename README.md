@@ -246,7 +246,7 @@ Przycisk **„Dane demo"** ładuje wbudowany plik z pół roku świec 15-minutow
 |---|---|
 | Początek świecy | Godzina otwarcia świecy sygnałowej (domyślnie 08:00). |
 | Długość | Ile minut trwa świeca sygnałowa (domyślnie 15). |
-| Z czego czytać kierunek świecy | **Korpus** (domyślnie) patrzy tylko na otwarcie i zamknięcie, czyli na kolorową część świecy — knoty są pomijane. **Cały zakres** porównuje zamknięcie ze środkiem między szczytem a dołkiem. Świeca z długim górnym knotem bywa formalnie zielona, choć cena została odrzucona od góry; ten tryb potraktuje ją jako spadkową. Na danych demo oba tryby oceniają przeciwnie 16% dni. Dotyczy tylko strategii 1. |
+| Z czego czytać kierunek świecy | Trzy sposoby. **Korpus** (domyślnie) — otwarcie kontra zamknięcie, knoty pomijane. **Wychylenia** — które sięgnęło dalej od otwarcia: górne (szczyt − otwarcie) czy dolne (otwarcie − dołek); zamknięcie nie ma znaczenia. **Zakres** — zamknięcie kontra środek między szczytem a dołkiem. Dotyczy tylko strategii 1. |
 | Kierunek pozycji | `Podążaj za świecą` = pierwotna logika. Można ją odwrócić albo ograniczyć do samych longów lub shortów. |
 | Gdy świeca bez zmiany | Co zrobić, gdy otwarcie równa się zamknięciu (doji). Tylko strategia 1. |
 
@@ -260,6 +260,7 @@ Widoczne po przełączeniu na drugą strategię:
 | Co uznajemy za przebicie | **Dotknięcie poziomu** — wystarczy, że cena sięgnie granicy; wejście po cenie tego poziomu, tak jak zadziałałoby zlecenie stop. **Zamknięcie poza zakresem** — świeca musi się zamknąć poza granicą; odfiltrowuje przekłucia knotem, ale wchodzi później i dalej, więc ryzyko na transakcję rośnie. |
 | Bufor wybicia | Ile pipsów cena musi wyjść poza zakres, żeby wybicie się liczyło. Filtruje płytkie przekłucia. 0 = bez filtra. |
 | Gdy jedna świeca przebija obie granice | Z samego OHLC nie wynika, który poziom padł pierwszy. Domyślnie zakładamy, że **bliższy otwarciu** tej świecy (cena rusza od otwarcia). Można też wymusić stronę albo pominąć taki dzień jako nierozstrzygalny. |
+| Co cena ma przebić | **Szczyt i dołek świecy** (domyślnie) — pełny zakres razem z knotami. **Krańce korpusu** — otwarcie i zamknięcie; te poziomy leżą bliżej, więc wybicia padają częściej i wcześniej, a stop jest ciaśniejszy. |
 | Powtórki w ciągu dnia | **Jedna transakcja dziennie** (domyślnie), **dopuść wybicie w drugą stronę** po zamknięciu pierwszej pozycji, albo **każde kolejne wybicie** aż do limitu dziennego. Kolejna próba nigdy nie startuje przed zamknięciem poprzedniej. |
 
 Przy tej strategii metoda stop lossa **„zakres świecy"** oznacza przeciwną granicę zakresu —

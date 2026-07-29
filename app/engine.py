@@ -182,11 +182,20 @@ def _resolve_direction(
     **Korpus** patrzy wyłącznie na otwarcie i zamknięcie, czyli na kolorową część świecy;
     knoty są pomijane. To klasyczna definicja „zielona / czerwona”.
 
-    **Cały zakres** porównuje zamknięcie ze środkiem między szczytem a dołkiem. Świeca
+    **Wychylenia** porównują zasięg ruchu w każdą stronę od otwarcia: górne wychylenie
+    (szczyt minus otwarcie) kontra dolne (otwarcie minus dołek). Decyduje to, jak daleko
+    cena zaszła, a nie gdzie ostatecznie zamknęła świecę.
+
+    **Zakres** porównuje zamknięcie ze środkiem między szczytem a dołkiem. Świeca
     z długim górnym knotem i zamknięciem przy dole bywa formalnie zielona, choć cena
     została odrzucona od góry — ten tryb potraktuje ją jako spadkową.
     """
-    if cfg.direction_source == "range":
+    if cfg.direction_source == "swing":
+        # Które wychylenie sięgnęło dalej od otwarcia — górne czy dolne. Zamknięcie
+        # nie ma tu znaczenia; liczy się sam zasięg ruchu w każdą stronę.
+        up, down = candle_high - candle_open, candle_open - candle_low
+        higher, lower, tie = up > down, down > up, "z równymi wychyleniami"
+    elif cfg.direction_source == "range":
         midpoint = (candle_high + candle_low) / 2.0
         higher, lower, tie = candle_close > midpoint, candle_close < midpoint, "w środku zakresu"
     else:
@@ -421,8 +430,15 @@ def _build_trades_breakout(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -
             continue
 
         r_open, r_high, r_low, r_close = _aggregate(window)
-        upper = r_high + buffer_price
-        lower = r_low - buffer_price
+        # Granice do przebicia: albo pełny zakres z knotami, albo same krańce korpusu.
+        # Korpus leży bliżej ceny, więc wybicia padają częściej i wcześniej, a stop
+        # jest ciaśniejszy — to zupełnie inny charakter tej samej strategii.
+        if cfg.breakout_levels == "body":
+            edge_high, edge_low = max(r_open, r_close), min(r_open, r_close)
+        else:
+            edge_high, edge_low = r_high, r_low
+        upper = edge_high + buffer_price
+        lower = edge_low - buffer_price
         window_end = _breakout_window_end(cfg, day, range_end_local, tz)
 
         limit = {"single": 1, "opposite": 2}.get(
@@ -462,7 +478,7 @@ def _build_trades_breakout(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -
                 continue
 
             entry_price = entry_raw + direction * cfg.spread_price
-            risk = _breakout_risk_distance(cfg, side, entry_price, r_low, r_high)
+            risk = _breakout_risk_distance(cfg, side, entry_price, edge_low, edge_high)
             if risk <= 0:
                 trade.skip_reason = "dystans Stop Lossa wyszedł zerowy lub ujemny"
                 blocked.add(side)

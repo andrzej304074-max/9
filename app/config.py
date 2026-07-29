@@ -42,7 +42,14 @@ BREAKOUT_BOTH_SIDES = {
 
 DIRECTION_SOURCES = {
     "body": "Korpus — otwarcie kontra zamknięcie",
-    "range": "Cały zakres — zamknięcie kontra środek świecy",
+    "swing": "Wychylenia — które sięgnęło dalej od otwarcia",
+    "range": "Zakres — zamknięcie kontra środek świecy",
+}
+
+# Z czego brać granice, które cena ma przebić w strategii wybicia.
+BREAKOUT_LEVELS = {
+    "range": "Szczyt i dołek świecy (z knotami)",
+    "body": "Krańce korpusu (otwarcie i zamknięcie)",
 }
 
 DIRECTION_MODES = {
@@ -128,6 +135,7 @@ class BacktestConfig:
     breakout_retry_mode: str = "single"
     breakout_max_per_day: int = 5
     breakout_both_sides: str = "open_proximity"
+    breakout_levels: str = "range"
 
     # --- logika pozycji ---
     entry_mode: str = "next_open"
@@ -206,6 +214,7 @@ class BacktestConfig:
         _choice(self.breakout_trigger, BREAKOUT_TRIGGERS, "Wyzwalacz wybicia")
         _choice(self.breakout_retry_mode, BREAKOUT_RETRY_MODES, "Powtórki wybicia")
         _choice(self.breakout_both_sides, BREAKOUT_BOTH_SIDES, "Wybicie obustronne")
+        _choice(self.breakout_levels, BREAKOUT_LEVELS, "Granice wybicia")
         _choice(self.direction_source, DIRECTION_SOURCES, "Źródło kierunku")
         _choice(self.direction_mode, DIRECTION_MODES, "Tryb kierunku")
         _choice(self.doji_mode, DOJI_MODES, "Zachowanie na doji")
@@ -300,4 +309,5 @@ def options_payload() -> dict[str, dict[str, str]]:
         "breakout_trigger": BREAKOUT_TRIGGERS,
         "breakout_retry_mode": BREAKOUT_RETRY_MODES,
         "breakout_both_sides": BREAKOUT_BOTH_SIDES,
+        "breakout_levels": BREAKOUT_LEVELS,
     }

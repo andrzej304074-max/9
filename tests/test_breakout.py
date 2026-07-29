@@ -468,3 +468,62 @@ def test_both_strategies_read_the_same_candle_but_trade_differently():
     assert direction_trade.direction == LONG    # zielona świeca
     assert breakout_trade.direction == SHORT    # ale wybicie poszło dołem
     assert direction_trade.entry_ts != breakout_trade.entry_ts
+
+
+# --- co cena ma przebić: zakres czy korpus ------------------------------------------
+
+
+def body_vs_range_bars() -> list[Bar]:
+    """Świeca z długimi knotami: korpus 1,2000–1,2010, pełny zakres 1,1980–1,2030."""
+    return [
+        bar("08:00", 1.2000, 1.2030, 1.1980, 1.2010),
+        quiet("08:15", 1.2010),
+        bar("08:30", 1.2011, 1.2018, 1.2009, 1.2016),   # ponad korpusem, poniżej szczytu
+        quiet("08:45", 1.2016),
+    ]
+
+
+def test_body_levels_trigger_where_the_full_range_would_not():
+    """Korpus leży bliżej ceny, więc wybicie pada tam, gdzie pełny zakres jeszcze milczy."""
+    bars = body_vs_range_bars()
+    assert played(run(bars, breakout_levels="range")) == []
+    trades = played(run(bars, breakout_levels="body"))
+    assert len(trades) == 1
+    assert trades[0].entry_price == pytest.approx(1.2010)   # kraniec korpusu, nie szczyt
+
+
+def test_body_levels_give_a_tighter_stop():
+    trade = played(run(body_vs_range_bars(), breakout_levels="body"))[0]
+    assert trade.stop_loss == pytest.approx(1.2000)         # otwarcie, nie dołek 1,1980
+    assert trade.risk_distance == pytest.approx(0.0010)     # zamiast 0,0050
+
+
+def test_range_is_the_default():
+    assert BacktestConfig().breakout_levels == "range"
+
+
+def test_body_levels_work_downwards_too():
+    bars = [
+        bar("08:00", 1.2010, 1.2030, 1.1980, 1.2000),      # korpus 1,2000–1,2010
+        quiet("08:15", 1.2000),
+        bar("08:30", 1.1999, 1.2001, 1.1995, 1.1996),      # poniżej korpusu, powyżej dołka
+        quiet("08:45", 1.1996),
+    ]
+    assert played(run(bars, breakout_levels="range")) == []
+    trade = played(run(bars, breakout_levels="body"))[0]
+    assert trade.direction == SHORT
+    assert trade.entry_price == pytest.approx(1.2000)
+    assert trade.stop_loss == pytest.approx(1.2010)
+
+
+def test_buffer_applies_to_body_levels_as_well():
+    bars = body_vs_range_bars()
+    assert played(run(bars, breakout_levels="body", breakout_buffer_pips=0)) != []
+    assert played(run(bars, breakout_levels="body", breakout_buffer_pips=20)) == []
+
+
+def test_an_unknown_level_choice_is_rejected():
+    from app.config import ConfigError
+
+    with pytest.raises(ConfigError, match="Granice wybicia"):
+        BacktestConfig(breakout_levels="cos_innego").validate()

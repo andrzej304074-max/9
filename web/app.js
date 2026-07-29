@@ -164,7 +164,8 @@ function wireEvents() {
   });
 
   ['sl_method', 'position_mode', 'sizing_mode', 'direction_mode', 'direction_source',
-   'breakout_window_mode', 'breakout_retry_mode', 'breakout_trigger'].forEach((id) => {
+   'breakout_window_mode', 'breakout_retry_mode', 'breakout_trigger',
+   'breakout_levels'].forEach((id) => {
     $(id).addEventListener('change', syncConditionalFields);
   });
 
@@ -214,7 +215,8 @@ function applyConfig(cfg) {
    'position_mode', 'close_after_days', 'initial_capital', 'leverage', 'sizing_mode',
    'risk_percent', 'lookback_days', 'date_from', 'date_to',
    'breakout_window_mode', 'breakout_hours', 'breakout_trigger', 'breakout_buffer_pips',
-   'breakout_retry_mode', 'breakout_max_per_day', 'breakout_both_sides'].forEach((id) => set(id, cfg[id]));
+   'breakout_retry_mode', 'breakout_max_per_day', 'breakout_both_sides',
+   'breakout_levels'].forEach((id) => set(id, cfg[id]));
 
   const active = new Set(cfg.weekdays || [0, 1, 2, 3, 4]);
   document.querySelectorAll('.weekday-toggle').forEach((input) => {
@@ -247,6 +249,7 @@ function collectConfig() {
     breakout_retry_mode: $('breakout_retry_mode').value,
     breakout_max_per_day: num('breakout_max_per_day', 5),
     breakout_both_sides: $('breakout_both_sides').value,
+    breakout_levels: $('breakout_levels').value,
     timezone: $('timezone').value,
     signal_hour: signalHour,
     signal_minute: signalMinute,
@@ -351,10 +354,18 @@ function syncConditionalFields() {
 
   $('direction-source-hint').textContent = {
     body: 'Liczy się tylko kolorowy korpus — otwarcie kontra zamknięcie. Knoty są pomijane.',
+    swing: 'Liczy się, w którą stronę cena zaszła dalej od otwarcia: górne wychylenie '
+      + '(szczyt − otwarcie) kontra dolne (otwarcie − dołek). Zamknięcie nie ma znaczenia.',
     range: 'Liczy się położenie zamknięcia względem środka między szczytem a dołkiem. '
       + 'Świeca z długim górnym knotem i zamknięciem przy dole bywa formalnie zielona, '
       + 'ale tutaj wyjdzie spadkowa — cena została odrzucona od góry.',
   }[$('direction_source').value] || '';
+
+  $('breakout-levels-hint').textContent = {
+    range: 'Cena musi wyjść poza szczyt albo dołek świecy, czyli poza jej knoty.',
+    body: 'Cena musi wyjść poza otwarcie albo zamknięcie. Te poziomy leżą bliżej, '
+      + 'więc wybicia padają częściej i wcześniej, a stop jest ciaśniejszy.',
+  }[$('breakout_levels').value] || '';
 
   $('sl-method-hint').textContent = $('sl_method').value === 'candle_range'
     ? (state.strategy === 'range_breakout'
