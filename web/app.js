@@ -19,6 +19,7 @@ const state = {
   page: 0,
   pageSize: 250,
   dukascopyJob: null,
+  library: [],
   fetchIntervals: {},
   fetchHistoryDays: {},
   intervalChoice: { yahoo: '15m', dukascopy: '15' },
@@ -85,6 +86,7 @@ async function init() {
     fillSelect($('timezone'), Object.fromEntries(data.timezones.map((t) => [t, t])));
     Object.entries(data.options).forEach(([key, values]) => fillSelect($(key), values));
     fillSelect($('duka_instrument'), data.dukascopy_instruments || {});
+    fillSelect($('duka_price'), (data.options || {}).tick_price || {});
     state.fetchIntervals = data.fetch_intervals || {};
     state.fetchHistoryDays = data.fetch_history_days || {};
     state.intervalChoice = { yahoo: '15m', dukascopy: '15' };
@@ -94,6 +96,7 @@ async function init() {
     state.saved = loadStoredConfigs();
     state.strategy = state.saved.__active || 'candle_direction';
     applyConfig(configFor(state.strategy));
+    refreshLibrary();
   } catch (err) {
     setStatus('Nie udało się pobrać ustawień z serwera: ' + err.message, 'error');
     return;
@@ -142,6 +145,7 @@ function wireEvents() {
   $('btn-reset').addEventListener('click', () => {
     delete state.saved[state.strategy];   // reset dotyczy tylko bieżącej strategii
     applyConfig(configFor(state.strategy));
+    refreshLibrary();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state.saved));
     syncConditionalFields();
     setStatus(`Przywrócono ustawienia domyślne strategii „${STRATEGY_LABELS[state.strategy]}”.`, 'ok');
@@ -176,6 +180,8 @@ function wireEvents() {
     $(id).addEventListener('change', syncFetchHint);
     $(id).addEventListener('input', syncFetchHint);
   });
+  $('library-body').addEventListener('click', handleLibraryAction);
+  $('btn-library-refresh').addEventListener('click', refreshLibrary);
   $('btn-compare').addEventListener('click', runCompare);
   $('btn-compare-close').addEventListener('click', () => {
     state.compare = null;
@@ -515,6 +521,7 @@ function onDatasetLoaded(data) {
     (data.interval_minutes ? ` · interwał ${data.interval_minutes} min` : '');
 
   setPriceFormat(data.median_price);
+  refreshLibrary();
 
   const warnings = [...(data.warnings || [])];
 
@@ -704,6 +711,7 @@ async function startDukascopy() {
     date_from: range.from,
     date_to: range.to,
     interval_minutes: selectedIntervalMinutes(),
+    price: $('duka_price').value,
     timezone: $('timezone').value,
   };
 
@@ -921,8 +929,9 @@ async function cancelDukascopy() {
   }
 }
 
-async function withBusy(buttonId, message, task) {
-  const button = $(buttonId);
+async function withBusy(target, message, task) {
+  // przyjmuje identyfikator albo gotowy element — przyciski biblioteki powstają dynamicznie
+  const button = typeof target === 'string' ? $(target) : target;
   button.disabled = true;
   setStatus(message);
   try {
@@ -981,6 +990,98 @@ function explainNoTrades(days) {
   return `Zero pozycji na ${days} dni sygnałowych`
     + (skipped ? ` — najczęstszy powód: ${skipped.skip_reason}.` : '.')
     + ' Sprawdź godzinę świecy sygnałowej i tryb kierunku w sekcji 2.';
+}
+
+/* ---------------- biblioteka zapisanych zbiorów ---------------- */
+
+async function refreshLibrary() {
+  let data;
+  try {
+    data = await callApi('api/datasets', undefined, { allowRecovery: false });
+  } catch {
+    return;                       // biblioteka jest dodatkiem, jej awaria nie może psuć reszty
+  }
+  state.library = data.datasets || [];
+  $('library-card').hidden = state.library.length === 0;
+
+  const usage = data.usage || {};
+  $('library-sub').textContent = state.library.length
+    ? `${state.library.length} ${state.library.length === 1 ? 'zbiór' : 'zbiorów'} · `
+      + `${formatBytes(usage.bytes || 0)} · kliknij „Wczytaj”, żeby wrócić do danych bez pobierania`
+    : '';
+
+  const warning = $('library-warning');
+  warning.hidden = data.persistent !== false;
+  if (!warning.hidden) {
+    warning.textContent = 'Ta instancja działa bezserwerowo, więc zapisane zbiory żyją tylko '
+      + 'do czasu uśpienia serwera — traktuj tę listę jako wygodę w obrębie sesji, nie archiwum. '
+      + 'Trwałą kopię pobierzesz przyciskiem „Pobierz CSV”.';
+    warning.classList.add('hint-limit');
+  }
+
+  $('library-body').innerHTML = state.library.map((e) => {
+    const biezacy = e.id === state.datasetId;
+    const okres = e.first_date && e.last_date ? `${e.first_date} → ${e.last_date}` : '—';
+    return `<tr>
+      <td class="${biezacy ? 'library-current' : ''}">${escapeHtml(e.name || e.source || e.id)}</td>
+      <td class="num">${e.bars ? Number(e.bars).toLocaleString('pl-PL') : '—'}</td>
+      <td>${escapeHtml(okres)}</td>
+      <td class="num">${e.interval_minutes ? `${e.interval_minutes} min` : '—'}</td>
+      <td class="num">${formatBytes(e.bytes || 0)}</td>
+      <td>
+        <div class="library-actions">
+          <button type="button" class="btn btn-ghost" data-lib="open" data-id="${e.id}">Wczytaj</button>
+          <button type="button" class="btn btn-ghost" data-lib="rename" data-id="${e.id}">Nazwa</button>
+          <button type="button" class="btn btn-ghost" data-lib="csv" data-id="${e.id}">Pobierz CSV</button>
+          <button type="button" class="btn btn-ghost" data-lib="delete" data-id="${e.id}">Usuń</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function handleLibraryAction(event) {
+  const button = event.target.closest('[data-lib]');
+  if (!button) return;
+  const { lib: action, id } = button.dataset;
+  const entry = (state.library || []).find((e) => e.id === id) || {};
+
+  if (action === 'csv') {
+    window.location.href = `api/datasets/${id}/csv`;
+    return;
+  }
+
+  if (action === 'open') {
+    await withBusy(button, 'Wczytuję zapisany zbiór…', async () => {
+      const tz = encodeURIComponent($('timezone').value);
+      // zbiór jest już na serwerze, więc nie ma czego wysyłać ponownie
+      state.source = { kind: 'library', id };
+      onDatasetLoaded(await callApi(`api/datasets/${id}/open?timezone=${tz}`, { method: 'POST' }));
+      refreshLibrary();
+    });
+    return;
+  }
+
+  if (action === 'rename') {
+    const name = window.prompt('Nowa nazwa zbioru:', entry.name || '');
+    if (name === null) return;
+    await callApi(`api/datasets/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    refreshLibrary();
+    return;
+  }
+
+  if (action === 'delete') {
+    const ile = entry.bars ? `${Number(entry.bars).toLocaleString('pl-PL')} świec` : 'ten zbiór';
+    if (!window.confirm(`Usunąć „${entry.name || id}” (${ile})? Tej operacji nie da się cofnąć.`)) return;
+    await callApi(`api/datasets/${id}`, { method: 'DELETE' });
+    if (id === state.datasetId) state.datasetId = null;
+    refreshLibrary();
+    setStatus('Zbiór usunięty z biblioteki.', 'ok');
+  }
 }
 
 /* ---------------- porównanie obu strategii ---------------- */

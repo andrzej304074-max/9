@@ -98,6 +98,12 @@
             Pobrane godziny trafiają do pamięci podręcznej, więc powtórka tego samego okresu
             jest natychmiastowa.</p>
         </div>
+        <div class="field" data-source="dukascopy">
+          <label for="duka_price">Z której ceny składać świece</label>
+          <select id="duka_price"></select>
+          <p class="hint">Dukascopy podaje osobno cenę kupna i sprzedaży. Wykresy walutowe
+            pokazują zwykle bid; cena środkowa jest bliżej tego, co publikuje Yahoo Finance.</p>
+        </div>
 
         <div class="progress" id="duka-progress" hidden>
           <div class="progress-track"><div class="progress-fill" id="duka-fill"></div></div>
@@ -324,7 +330,36 @@
   </aside>
 
   <!-- ============ WYNIKI ============ -->
-  <main class="results" id="results" hidden>
+  <main class="results-column">
+
+    <!-- BIBLIOTEKA — widoczna niezależnie od tego, czy policzono już backtest -->
+    <section class="card" id="library-card" hidden>
+      <div class="card-head">
+        <div>
+          <h2>Zapisane dane</h2>
+          <p class="card-sub" id="library-sub"></p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-small" id="btn-library-refresh">Odśwież</button>
+      </div>
+      <p class="hint" id="library-warning" hidden></p>
+      <div class="table-scroll">
+        <table class="data-table" id="library-table">
+          <thead>
+            <tr>
+              <th scope="col">Nazwa</th>
+              <th scope="col">Świec</th>
+              <th scope="col">Okres</th>
+              <th scope="col">Interwał</th>
+              <th scope="col">Rozmiar</th>
+              <th scope="col">Akcje</th>
+            </tr>
+          </thead>
+          <tbody id="library-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  <div id="results" hidden>
 
     <section class="card" id="compare-card" hidden>
       <div class="card-head">
@@ -433,6 +468,7 @@
       wykonuje się dokładnie po cenie stop lossa lub take profitu. Wyniki historyczne nie są
       obietnicą wyników przyszłych.
     </p>
+    </div><!-- /#results -->
   </main>
 </div>
 

@@ -60,9 +60,9 @@ def test_uploads_land_in_the_writable_directory(serverless_app, tmp_path):
     response = client.post("/api/upload", files={"file": ("dane.csv", SAMPLE_CSV, "text/csv")})
 
     assert response.status_code == 200
-    assert list((tmp_path / "uploads").glob("*.csv"))
-    assert not (REPO_ROOT / "data" / "uploads").exists() or not list(
-        (REPO_ROOT / "data" / "uploads").glob(f"{response.json()['dataset_id']}.csv")
+    assert list((tmp_path / "datasets").glob("*.csv"))
+    assert not (REPO_ROOT / "data" / "datasets").exists() or not list(
+        (REPO_ROOT / "data" / "datasets").glob(f"{response.json()['dataset_id']}.csv")
     )
 
 

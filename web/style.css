@@ -336,7 +336,15 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 
 /* ---------- karty wyników ---------- */
 
+.results-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .results { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+/* biblioteka danych */
+#library-table td:first-child { font-weight: 600; }
+.library-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.library-actions .btn { width: auto; margin: 0; padding: 3px 8px; font-size: 0.72rem; }
+.library-current { color: var(--series); }
+.library-current::after { content: " · wczytany"; font-weight: 400; color: var(--muted); }
 
 .card {
   background: var(--surface);

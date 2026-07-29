@@ -40,6 +40,13 @@ BREAKOUT_BOTH_SIDES = {
     "skip": "Pomiń — nie da się rozstrzygnąć",
 }
 
+# Z której ceny składać świece z ticków Dukascopy.
+TICK_PRICES = {
+    "bid": "Bid — cena sprzedaży (jak wykresy walutowe)",
+    "ask": "Ask — cena kupna",
+    "mid": "Środkowa — średnia bid i ask",
+}
+
 DIRECTION_SOURCES = {
     "body": "Korpus — otwarcie kontra zamknięcie",
     "swing": "Wychylenia — które sięgnęło dalej od otwarcia",
@@ -323,4 +330,5 @@ def options_payload() -> dict[str, dict[str, str]]:
         "breakout_both_sides": BREAKOUT_BOTH_SIDES,
         "breakout_levels": BREAKOUT_LEVELS,
         "breakout_stop_levels": BREAKOUT_STOP_LEVELS,
+        "tick_price": TICK_PRICES,
     }

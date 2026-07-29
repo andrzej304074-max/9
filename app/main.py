@@ -14,7 +14,7 @@ from typing import Any, Optional
 from zoneinfo import available_timezones
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,7 @@ from .dukascopy import (
     probe as probe_dukascopy,
 )
 from .engine import run_backtest
+from . import library
 from .fetch import DEFAULT_SYMBOL, fetch_bars, intervals_payload, max_history_days
 from .runtime import (
     BASE_DIR,
@@ -109,27 +110,19 @@ def _dataset_id(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def _store(text: str) -> str:
+def _store(text: str, name: str = "", source: str = "", meta: Optional[dict[str, Any]] = None) -> str:
+    """Zapamiętuje zbiór w pamięci procesu i w bibliotece na dysku."""
     dataset_id = _dataset_id(text)
     _DATASETS[dataset_id] = text
-    try:
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        target = UPLOAD_DIR / f"{dataset_id}.csv"
-        if not target.exists():
-            target.write_text(text, encoding="utf-8")
-    except OSError:
-        # Brak miejsca albo katalog tylko do odczytu — pamięć procesu wystarczy,
-        # a front i tak umie wysłać dane ponownie.
-        pass
+    library.save(dataset_id, text, name, source, meta)
     return dataset_id
 
 
 def _load_text(dataset_id: str) -> str:
     if dataset_id in _DATASETS:
         return _DATASETS[dataset_id]
-    stored = UPLOAD_DIR / f"{dataset_id}.csv"
-    if stored.exists():
-        text = stored.read_text(encoding="utf-8")
+    text = library.get_text(dataset_id)
+    if text is not None:
         _DATASETS[dataset_id] = text
         return text
     # Kod 409 zamiast 404: front rozpoznaje go jako „instancja nie zna tych danych”
@@ -153,7 +146,7 @@ def _dataset_payload(dataset_id: str, result: LoadResult, source: str, timezone_
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo(timezone_name)
-    return {
+    payload = {
         "dataset_id": dataset_id,
         "source": source,
         "bars": len(result.bars),
@@ -171,6 +164,16 @@ def _dataset_payload(dataset_id: str, result: LoadResult, source: str, timezone_
         if result.bars
         else None,
     }
+
+    # Każde źródło danych przechodzi przez to miejsce, więc tu opisujemy zbiór w bibliotece.
+    library.describe(
+        dataset_id,
+        name=source,
+        source=source,
+        meta={key: payload[key] for key in
+              ("bars", "interval_minutes", "first_date", "last_date", "rejected_rows")},
+    )
+    return payload
 
 
 @app.exception_handler(DataError)
@@ -244,9 +247,13 @@ async def upload(
     else:
         raise DataError("Nie udało się rozpoznać kodowania pliku.")
 
+    # Przeglądarka dokleja „.gz” przy kompresji — w bibliotece ma się pokazać nazwa,
+    # którą użytkownik zna ze swojego dysku.
+    filename = (file.filename or "plik.csv").removesuffix(".gz")
+
     dataset_id = _store(text)
     result = _parse(dataset_id, timezone)
-    return _dataset_payload(dataset_id, result, file.filename or "plik.csv", timezone)
+    return _dataset_payload(dataset_id, result, filename, timezone)
 
 
 @app.get("/api/sample")
@@ -452,6 +459,68 @@ def dukascopy_cancel(job_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Nie znaleziono zadania pobierania.")
         _JOBS[job_id]["cancel"] = True
     return {"ok": True}
+
+
+class RenameRequest(BaseModel):
+    name: str
+
+
+@app.get("/api/datasets")
+def list_datasets() -> dict[str, Any]:
+    """Zbiory, które już przez aplikację przeszły — do ponownego użycia bez pobierania."""
+    return {
+        "datasets": library.entries(),
+        "usage": library.usage(),
+        # Na Vercelu katalog zapisu jest ulotny; front ma o tym uprzedzić, zamiast
+        # obiecywać trwałe archiwum, którego platforma nie zapewnia.
+        "persistent": not IS_SERVERLESS,
+    }
+
+
+@app.post("/api/datasets/{dataset_id}/open")
+def open_dataset(dataset_id: str, timezone: str = "Europe/London") -> dict[str, Any]:
+    """Wczytuje zapisany zbiór ponownie — bez sieci i bez wysyłania pliku."""
+    entry = next((e for e in library.entries() if e["id"] == dataset_id), None)
+    text = library.get_text(dataset_id)
+    if text is None:
+        raise HTTPException(status_code=404, detail="Nie ma już takiego zbioru w bibliotece.")
+
+    _DATASETS[dataset_id] = text
+    result = _parse(dataset_id, timezone)
+    label = (entry or {}).get("name") or (entry or {}).get("source") or "zapisany zbiór"
+    return _dataset_payload(dataset_id, result, label, timezone)
+
+
+@app.patch("/api/datasets/{dataset_id}")
+def rename_dataset(dataset_id: str, request: RenameRequest) -> dict[str, Any]:
+    if not library.rename(dataset_id, request.name):
+        raise DataError("Nazwa nie może być pusta, a zbiór musi istnieć w bibliotece.")
+    return {"ok": True}
+
+
+@app.delete("/api/datasets/{dataset_id}")
+def delete_dataset(dataset_id: str) -> dict[str, Any]:
+    if not library.remove(dataset_id):
+        raise HTTPException(status_code=404, detail="Nie ma już takiego zbioru w bibliotece.")
+    _DATASETS.pop(dataset_id, None)
+    for key in [k for k in _PARSE_CACHE if k[0] == dataset_id]:
+        _PARSE_CACHE.pop(key, None)
+    return {"ok": True}
+
+
+@app.get("/api/datasets/{dataset_id}/csv")
+def download_dataset(dataset_id: str) -> Response:
+    """Oddaje zapisany zbiór jako plik CSV — do obejrzenia albo poprawienia u siebie."""
+    text = library.get_text(dataset_id)
+    if text is None:
+        raise HTTPException(status_code=404, detail="Nie ma już takiego zbioru w bibliotece.")
+    entry = next((e for e in library.entries() if e["id"] == dataset_id), {})
+    safe = "".join(c for c in str(entry.get("name", dataset_id)) if c.isalnum() or c in " -_")[:60]
+    return Response(
+        content=text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe or dataset_id}.csv"'},
+    )
 
 
 @app.post("/api/backtest")

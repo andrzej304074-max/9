@@ -133,6 +133,25 @@ To **inny dostawca kwotowań niż TradingView** — świece mogą się nieznaczn
 > bo polityka sieciowa blokowała tam zewnętrzne hosty. Samo cofanie się oknami, sklejanie
 > i zachowanie na granicy archiwum są pokryte testami na atrapie dostawcy.
 
+### Biblioteka zapisanych danych
+
+Każdy plik, który raz trafił do aplikacji — wgrany ręcznie, pobrany z Dukascopy czy z Yahoo —
+zostaje zapisany i pojawia się w panelu **„Zapisane dane"** nad wynikami. Widać tam nazwę,
+liczbę świec, obejmowany okres, interwał i rozmiar, a przy każdej pozycji cztery przyciski:
+
+- **Wczytaj** — wraca do tych danych bez ponownego pobierania z sieci
+- **Nazwa** — własna nazwa zamiast nazwy pliku (przetrwa ponowne wczytanie tych samych danych)
+- **Pobierz CSV** — wynosi kopię na dysk, do obejrzenia albo poprawienia w arkuszu
+- **Usuń** — kasuje wpis i plik
+
+Ten sam plik wczytany dwa razy daje jedną pozycję — identyfikator wynika z treści, więc
+powtórki się nie mnożą.
+
+**Trwałość zależy od tego, gdzie aplikacja działa.** Lokalnie pliki leżą w katalogu `data/`
+i przeżywają restart. Przy wdrożeniu bezserwerowym jedynym zapisywalnym miejscem jest katalog
+tymczasowy, ulotny i lokalny dla instancji — biblioteka jest tam wygodą w obrębie sesji,
+a nie archiwum. Panel mówi o tym wprost, a przycisk „Pobierz CSV" pozwala zrobić trwałą kopię.
+
 ### Inne instrumenty niż GBP/USD
 
 Silnik nie wie i nie musi wiedzieć, jaki instrument liczy — przetwarza po prostu świece OHLC.
@@ -407,5 +426,10 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/dukascopy/cancel/{job_id}` | Przerwanie pobierania. |
 | `POST /api/backtest` | `{"dataset_id": "...", "config": {...}}` → pełne wyniki. Pole `strategy` wybiera `candle_direction` albo `range_breakout`. |
 | `POST /api/compare` | `{"dataset_id": "...", "configs": {"candle_direction": {...}, "range_breakout": {...}}}` → oba komplety wyników naraz. |
+| `GET /api/datasets` | Lista zapisanych zbiorów razem z opisem i informacją, czy zapis jest trwały. |
+| `POST /api/datasets/{id}/open` | Wczytuje zapisany zbiór ponownie — bez sieci i bez wysyłania pliku. |
+| `PATCH /api/datasets/{id}` | Zmiana nazwy zbioru. |
+| `DELETE /api/datasets/{id}` | Usunięcie zbioru z biblioteki. |
+| `GET /api/datasets/{id}/csv` | Pobranie zapisanego zbioru jako pliku CSV. |
 | `POST /api/dukascopy/chunk` | Pobiera tyle dni, ile zmieści się w limicie czasu, i zwraca surowy CSV razem z ostatnim domkniętym dniem. Klient wznawia od następnego. |
 | `GET /api/dukascopy/probe` | Pobiera jeden testowy plik godzinowy i opisuje wynik — diagnostyka na wypadek, gdy pobieranie nie rusza. |
