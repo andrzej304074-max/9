@@ -147,6 +147,30 @@ liczbę świec, obejmowany okres, interwał i rozmiar, a przy każdej pozycji cz
 Ten sam plik wczytany dwa razy daje jedną pozycję — identyfikator wynika z treści, więc
 powtórki się nie mnożą.
 
+#### Masowe pobranie archiwum
+
+Zamiast pobierać instrumenty pojedynczo przez interfejs, można ściągnąć wszystko naraz
+i mieć gotowe w bibliotece:
+
+```bash
+python3 tools/pobierz_archiwum.py --sprawdz      # najpierw oszacowanie, nic nie pobiera
+python3 tools/pobierz_archiwum.py                # 10 lat, wszystkie instrumenty
+python3 tools/pobierz_archiwum.py --lata 3 --instrumenty GBPUSD EURUSD
+python3 tools/pobierz_archiwum.py --interwal 5 --cena mid
+```
+
+Skala jest spora: **10 lat × 8 instrumentów to pół miliona plików godzinowych i ~130 MB
+gotowych CSV**, czyli od dwudziestu minut do godziny pobierania. Tryb `--sprawdz` poda
+szacunek dla Twoich ustawień, zanim cokolwiek ruszy.
+
+Pobieranie da się przerwać `Ctrl+C`. Ściągnięte godziny zostają w pamięci podręcznej, więc
+ponowne uruchomienie dokończy resztę — sprawdzone: powtórka nie sięga po ani jeden plik
+godzinowy z sieci.
+
+**Uruchamiaj to lokalnie.** Przy wdrożeniu bezserwerowym katalog zapisu jest ulotny, więc
+pobrane archiwum i tak by nie przetrwało, a samo pobieranie trwa dłużej niż limit czasu
+pojedynczego żądania.
+
 **Trwałość zależy od tego, gdzie aplikacja działa.** Lokalnie pliki leżą w katalogu `data/`
 i przeżywają restart. Przy wdrożeniu bezserwerowym jedynym zapisywalnym miejscem jest katalog
 tymczasowy, ulotny i lokalny dla instancji — biblioteka jest tam wygodą w obrębie sesji,
@@ -391,7 +415,7 @@ app/
   main.py         serwer HTTP i API
 api/index.py      punkt wejścia funkcji bezserwerowej na Vercelu
 web/              frontend (HTML, CSS, czysty JavaScript — bez zależności)
-tools/            generator danych demo
+tools/            generator danych demo, masowe pobranie archiwum
 tests/            testy jednostkowe
 vercel.json       konfiguracja wdrożenia
 ```

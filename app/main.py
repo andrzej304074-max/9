@@ -107,7 +107,7 @@ def _job_update(job_id: str, **fields: Any) -> None:
 
 
 def _dataset_id(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:16]
+    return library.dataset_id_for(text)
 
 
 def _store(text: str, name: str = "", source: str = "", meta: Optional[dict[str, Any]] = None) -> str:

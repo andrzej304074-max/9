@@ -13,6 +13,7 @@ nie jest w stanie dotrzymać.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -21,6 +22,11 @@ from typing import Any, Optional
 from .runtime import state_dir
 
 INDEX_NAME = "index.json"
+
+
+def dataset_id_for(text: str) -> str:
+    """Identyfikator wynika z treści, więc te same dane zawsze dają tę samą pozycję."""
+    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def _root() -> Path:
