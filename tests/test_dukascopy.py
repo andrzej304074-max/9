@@ -242,6 +242,8 @@ def test_download_pipeline_end_to_end(tmp_path, monkeypatch):
     served: list[str] = []
 
     def fake_fetch(url: str) -> bytes:
+        if "candles" in url:
+            return b""          # ten instrument nie ma plików ze świecami
         served.append(url)
         hour = int(url.split("/")[-1][:2])
         if hour != 8:
@@ -414,6 +416,8 @@ def test_a_single_broken_hour_does_not_sink_the_whole_download(tmp_path, monkeyp
     import app.dukascopy as duka
 
     def flaky(url: str):
+        if "candles" in url:
+            return b""
         return None if url.endswith("03h_ticks.bi5") else make_bi5([(0, 126_350, 126_340)])
 
     monkeypatch.setattr(duka, "_fetch_hour", flaky)
@@ -538,7 +542,10 @@ def test_a_completely_dead_day_aborts_immediately(tmp_path, monkeypatch):
     with pytest.raises(DataError, match="ani jednego pliku"):
         duka.download_window(start=date(2024, 1, 2), end=date(2024, 12, 31), cache_dir=tmp_path)
 
-    assert len(tried) == 24        # poddajemy się po pierwszej dobie, nie po roku
+    # jedna sonda na pliki ze świecami plus doba plików godzinowych — i koniec,
+    # zamiast mielenia kilkudziesięciu tysięcy żądań przez cały rok
+    assert len(tried) == 25
+    assert sum(1 for u in tried if "candles" in u) == 1
 
 
 def test_partial_failures_do_not_abort(tmp_path, monkeypatch):
@@ -546,6 +553,8 @@ def test_partial_failures_do_not_abort(tmp_path, monkeypatch):
     import app.dukascopy as duka
 
     def half(url: str):
+        if "candles" in url:
+            return b""
         hour = int(url.split("/")[-1][:2])
         return None if hour % 2 else make_bi5([(0, 126_350, 126_340)])
 
@@ -554,3 +563,310 @@ def test_partial_failures_do_not_abort(tmp_path, monkeypatch):
 
     assert result.failed_hours == 24
     assert result.bars
+
+
+# --- współdzielenie połączeń --------------------------------------------------------
+
+
+class _FakeConn:
+    """Atrapa połączenia: liczy żądania i pozwala udawać zerwanie."""
+
+    def __init__(self, status=200, body=b"dane", boom_after=None):
+        self.status, self.body, self.boom_after = status, body, boom_after
+        self.requests, self.closed = 0, False
+
+    def request(self, method, path, headers=None):
+        self.requests += 1
+        if self.boom_after is not None and self.requests > self.boom_after:
+            raise ConnectionResetError("połączenie zerwane")
+
+    def getresponse(self):
+        outer = self
+
+        class _R:
+            status = outer.status
+            def read(self): return outer.body
+        return _R()
+
+    def close(self):
+        self.closed = True
+
+
+def use_pool(monkeypatch, conns):
+    """Podstawia pulę oddającą kolejne atrapy połączeń."""
+    import app.dukascopy as duka
+
+    pool = duka._ConnectionPool()
+    it = iter(conns)
+    current = {"c": None}
+
+    monkeypatch.setattr(pool, "get", lambda: current["c"] or current.__setitem__("c", next(it)) or current["c"])
+    monkeypatch.setattr(pool, "drop", lambda: current.__setitem__("c", None))
+    monkeypatch.setattr(duka, "_POOL", pool)
+    return pool
+
+
+def test_many_files_share_one_connection(monkeypatch):
+    """Sedno poprawki: rok historii to tysiące plików, a uścisk TLS ma nastąpić raz."""
+    import app.dukascopy as duka
+
+    conn = _FakeConn(body=b"zawartosc")
+    use_pool(monkeypatch, [conn, _FakeConn()])
+
+    for i in range(25):
+        assert duka._fetch_hour(f"https://x/{i}.bi5") == b"zawartosc"
+    assert conn.requests == 25          # wszystko poszło jednym połączeniem
+
+
+def test_missing_file_is_still_an_empty_result(monkeypatch):
+    import app.dukascopy as duka
+
+    use_pool(monkeypatch, [_FakeConn(status=404)])
+    assert duka._fetch_hour("https://x/a.bi5") == b""
+
+
+def test_a_dropped_connection_is_replaced_and_the_file_still_arrives(monkeypatch):
+    """Połączenie trzymane godzinami bywa zamykane przez drugą stronę — to nie może
+    kosztować pliku."""
+    import app.dukascopy as duka
+
+    martwe = _FakeConn(boom_after=0)
+    swieze = _FakeConn(body=b"udalo sie")
+    use_pool(monkeypatch, [martwe, swieze])
+
+    assert duka._fetch_hour("https://x/a.bi5") == b"udalo sie"
+    assert martwe.closed is False        # zamknięciem zajmuje się drop(), tu podmieniony
+
+
+def test_server_error_gives_up_after_retries(monkeypatch):
+    import app.dukascopy as duka
+
+    use_pool(monkeypatch, [_FakeConn(status=500) for _ in range(5)])
+    assert duka._fetch_hour("https://x/a.bi5") is None
+
+
+def test_proxy_is_honoured_when_the_environment_sets_one(monkeypatch):
+    """http.client, w odróżnieniu od urllib, nie czyta zmiennych proxy sam."""
+    import app.dukascopy as duka
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.local:3128")
+    assert duka._ConnectionPool._proxy() == ("proxy.local", 3128)
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    assert duka._ConnectionPool._proxy() is None
+
+
+def test_proxy_without_scheme_is_understood(monkeypatch):
+    import app.dukascopy as duka
+
+    monkeypatch.setenv("HTTPS_PROXY", "proxy.local:8080")
+    assert duka._ConnectionPool._proxy() == ("proxy.local", 8080)
+
+
+# --- składanie świec w locie --------------------------------------------------------
+
+
+def test_streaming_matches_the_tick_based_aggregation():
+    """Nowa ścieżka musi dawać co do bitu to samo, co stara przez listę ticków."""
+    from app.dukascopy import BarBuilder
+
+    payload = make_bi5([(m * 60_000 + s * 1000, 126_350 + m, 126_340 + m)
+                        for m in range(60) for s in (0, 30)])
+    hour = datetime(2024, 1, 2, 8, tzinfo=timezone.utc)
+
+    stara = ticks_to_bars(decode_bi5(payload, hour, 100_000.0), 15)
+    builder = BarBuilder(15)
+    builder.feed_bi5(payload, hour, 100_000.0)
+
+    assert [(b.ts, b.open, b.high, b.low, b.close) for b in builder.bars()] \
+        == [(b.ts, b.open, b.high, b.low, b.close) for b in stara]
+
+
+def test_builder_holds_candles_not_ticks():
+    """Zużycie pamięci ma zależeć od liczby świec, nie od liczby ticków."""
+    from app.dukascopy import BarBuilder
+
+    payload = make_bi5([(i * 100, 126_350, 126_340) for i in range(30_000)])
+    b = BarBuilder(15)
+    b.feed_bi5(payload, datetime(2024, 1, 2, 8, tzinfo=timezone.utc), 100_000.0)
+
+    assert len(b) <= 4          # godzina to najwyżej cztery świece 15-minutowe
+    assert len(b.bars()) <= 4
+
+
+@pytest.mark.parametrize("price,expected", [("bid", 1.26340), ("ask", 1.26350), ("mid", 1.26345)])
+def test_builder_respects_the_price_source(price, expected):
+    from app.dukascopy import BarBuilder
+
+    b = BarBuilder(15, price)
+    b.feed_bi5(make_bi5([(0, 126_350, 126_340)]), datetime(2024, 1, 2, 8, tzinfo=timezone.utc), 100_000.0)
+    assert b.bars()[0].open == pytest.approx(expected)
+
+
+# --- gotowe świece zamiast ticków ---------------------------------------------------
+
+
+def make_candles(records, scaled=True, scale=100_000.0) -> bytes:
+    """Buduje plik ze świecami minutowymi z listy (sekundy_od_polnocy, o, h, l, c)."""
+    from app.dukascopy import CANDLE_STRUCT
+
+    mul = scale if scaled else 1.0
+    raw = b"".join(
+        CANDLE_STRUCT.pack(t, o * mul, c * mul, l * mul, h * mul, 1.0)
+        for t, o, h, l, c in records
+    )
+    comp = lzma.LZMACompressor(format=lzma.FORMAT_ALONE)
+    return comp.compress(raw) + comp.flush()
+
+
+def test_candle_url_uses_zero_indexed_month_and_price_side():
+    from app.dukascopy import day_candles_url
+
+    url = day_candles_url("GBPUSD", date(2024, 1, 2), "bid")
+    assert url.endswith("/2024/00/02/BID_candles_min_1.bi5")
+    assert day_candles_url("GBPUSD", date(2024, 1, 2), "ask").endswith("ASK_candles_min_1.bi5")
+
+
+def test_candles_decode_into_bars():
+    from app.dukascopy import decode_candles
+
+    payload = make_candles([(600, 1.2630, 1.2640, 1.2625, 1.2635),
+                            (660, 1.2635, 1.2650, 1.2630, 1.2645)])
+    bars = decode_candles(payload, datetime(2024, 1, 2, tzinfo=timezone.utc), 100_000.0)
+
+    assert len(bars) == 2
+    assert bars[0].ts == datetime(2024, 1, 2, 0, 10, tzinfo=timezone.utc)
+    assert bars[0].open == pytest.approx(1.2630)
+    assert bars[0].high == pytest.approx(1.2640)
+    assert bars[0].low == pytest.approx(1.2625)
+    assert bars[0].close == pytest.approx(1.2635)
+
+
+def test_sanity_check_rejects_a_wrong_field_order():
+    """Gdyby kolejność pól w rekordzie była inna, ceny przestaja spelniac zaleznosci OHLC."""
+    from app.dukascopy import CANDLE_STRUCT, candles_look_sane, decode_candles
+
+    # zapisujemy pola w zlej kolejnosci: high tam, gdzie oczekiwany jest low
+    raw = CANDLE_STRUCT.pack(0, 1.2630e5, 1.2635e5, 1.2650e5, 1.2625e5, 1.0)
+    comp = lzma.LZMACompressor(format=lzma.FORMAT_ALONE)
+    payload = comp.compress(raw) + comp.flush()
+
+    bars = decode_candles(payload, datetime(2024, 1, 2, tzinfo=timezone.utc), 100_000.0)
+    assert not candles_look_sane(bars)
+
+
+def test_empty_minutes_are_skipped():
+    from app.dukascopy import decode_candles
+
+    payload = make_candles([(0, 0, 0, 0, 0), (60, 1.2630, 1.2640, 1.2625, 1.2635)])
+    bars = decode_candles(payload, datetime(2024, 1, 2, tzinfo=timezone.utc), 100_000.0)
+    assert len(bars) == 1
+
+
+def _matching_sources(scaled=True):
+    """Ticki i świece opisujące te same minuty — tak wygląda archiwum, gdy format czytamy dobrze."""
+    minutes = [(m, 1.2630 + m / 10000, 1.2640 + m / 10000, 1.2620 + m / 10000, 1.2635 + m / 10000)
+               for m in range(30)]
+    ticks = []
+    for m, o, h, l, c in minutes:
+        base = (10 * 60 + m) * 60_000        # godzina 10:00 tej doby
+        ticks += [(base, round(o * 1e5), round(o * 1e5)),
+                  (base + 10_000, round(h * 1e5), round(h * 1e5)),
+                  (base + 20_000, round(l * 1e5), round(l * 1e5)),
+                  (base + 50_000, round(c * 1e5), round(c * 1e5))]
+    hour_payload = make_bi5([(t - 10 * 3_600_000, a, b) for t, a, b in ticks])
+    candle_payload = make_candles([((10 * 60 + m) * 60, o, h, l, c) for m, o, h, l, c in minutes],
+                                  scaled=scaled)
+    return candle_payload, hour_payload
+
+
+def test_verification_accepts_candles_that_match_the_ticks(monkeypatch):
+    """Sedno zabezpieczenia: świec używamy dopiero, gdy zgodzą się z tickami."""
+    import app.dukascopy as duka
+
+    candles, ticks = _matching_sources()
+    monkeypatch.setattr(duka, "_fetch_hour",
+                        lambda url: candles if "candles" in url else ticks)
+
+    verdict = duka.verify_candles("GBPUSD")
+    assert verdict.usable
+    assert verdict.scaled is True
+    assert verdict.compared >= 10
+
+
+def test_verification_detects_unscaled_prices(monkeypatch):
+    """Gdyby ceny w pliku były zapisane wprost, a nie w punktach — też to rozpoznamy."""
+    import app.dukascopy as duka
+
+    candles, ticks = _matching_sources(scaled=False)
+    monkeypatch.setattr(duka, "_fetch_hour",
+                        lambda url: candles if "candles" in url else ticks)
+
+    verdict = duka.verify_candles("GBPUSD")
+    assert verdict.usable and verdict.scaled is False
+
+
+def test_verification_rejects_candles_that_disagree(monkeypatch):
+    """Zły odczyt formatu nie ma prawa przemycić fałszywych cen do wyników."""
+    import app.dukascopy as duka
+
+    _, ticks = _matching_sources()
+    zle = make_candles([((10 * 60 + m) * 60, 9.9, 9.9, 9.9, 9.9) for m in range(30)])
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: zle if "candles" in url else ticks)
+
+    verdict = duka.verify_candles("GBPUSD")
+    assert not verdict.usable
+    assert "nie zgadzają" in verdict.reason
+
+
+def test_missing_candle_files_fall_back_to_ticks(monkeypatch):
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: b"" if "candles" in url else make_bi5([(0, 1, 1)]))
+    verdict = duka.verify_candles("GBPUSD")
+    assert not verdict.usable
+    assert "nie ma plików" in verdict.reason
+
+
+def test_download_uses_one_file_per_day_when_candles_work(tmp_path, monkeypatch):
+    """Cała korzyść: doba kosztuje jeden plik zamiast dwudziestu czterech."""
+    import app.dukascopy as duka
+
+    candles, ticks = _matching_sources()
+    pobrane = []
+
+    def fetch(url):
+        pobrane.append(url)
+        return candles if "candles" in url else ticks
+
+    monkeypatch.setattr(duka, "_fetch_hour", fetch)
+    wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 4), cache_dir=tmp_path)
+
+    swiecowe = [u for u in pobrane if "candles" in u]
+    tickowe = [u for u in pobrane if "ticks" in u]
+    assert wynik.source == "candles"
+    assert len(swiecowe) == 1 + 3        # sonda weryfikacyjna + trzy doby
+    assert len(tickowe) == 1             # tylko godzina odniesienia z weryfikacji
+    assert wynik.bars
+
+
+def test_download_falls_back_to_ticks_without_candles(tmp_path, monkeypatch):
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour",
+                        lambda url: b"" if "candles" in url else make_bi5([(0, 126_350, 126_340)]))
+    wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 2), cache_dir=tmp_path)
+
+    assert wynik.source == "ticks"
+    assert wynik.bars
+
+
+def test_candles_can_be_switched_off(tmp_path, monkeypatch):
+    import app.dukascopy as duka
+
+    candles, ticks = _matching_sources()
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: candles if "candles" in url else ticks)
+    wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 2),
+                                 cache_dir=tmp_path, use_candles=False)
+    assert wynik.source == "ticks"

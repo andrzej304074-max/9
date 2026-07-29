@@ -14,10 +14,14 @@ Uwaga na pułapkę w adresie URL: **miesiąc jest indeksowany od zera** (stycze�
 
 from __future__ import annotations
 
+import http.client
 import lzma
+import os
 import struct
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -85,6 +89,71 @@ def hour_url(instrument: str, when: datetime) -> str:
     )
 
 
+# --- gotowe świece minutowe --------------------------------------------------------
+#
+# Poza plikami tickowymi Dukascopy udostępnia też pliki z gotowymi świecami: jeden na
+# całą dobę zamiast dwudziestu czterech godzinowych. To dwudziestoczterokrotnie mniej
+# żądań, a do złożenia świecy 15-minutowej minutowe w zupełności wystarczają.
+#
+# Format tych plików nie jest oficjalnie udokumentowany, dlatego nie ufamy mu na słowo:
+# przed użyciem porównujemy jedną dobę świec z tą samą dobą złożoną z ticków. Zgadza się
+# — korzystamy; nie zgadza się — cicho wracamy do ticków. Dzięki temu ewentualna pomyłka
+# w odczycie formatu nie może przemycić błędnych cen do wyników.
+
+CANDLE_STRUCT = struct.Struct(">i5f")   # 24 B: przesunięcie w sekundach, O, C, L, H, wolumen
+CANDLE_TOLERANCE = 1e-6                 # świece z obu źródeł muszą się zgadzać co do piątego miejsca
+
+
+def day_candles_url(instrument: str, day: date, price: str = "bid") -> str:
+    """Adres pliku z minutowymi świecami całej doby. Miesiąc, jak zwykle, liczony od zera."""
+    side = "ASK" if price == "ask" else "BID"
+    return (
+        f"{BASE_URL}/{instrument.upper()}/{day.year:04d}/{day.month - 1:02d}/"
+        f"{day.day:02d}/{side}_candles_min_1.bi5"
+    )
+
+
+def decode_candles(
+    payload: bytes, day_start: datetime, scale: float, scaled: bool = True
+) -> list[Bar]:
+    """Rozkodowuje plik ze świecami minutowymi.
+
+    `scaled` mówi, czy ceny są zapisane jako liczby w punktach (jak w plikach tickowych),
+    czy już jako gotowe wartości. Rozstrzyga to weryfikacja, a nie założenie.
+    """
+    raw = _decompress(payload)
+    if not raw:
+        return []
+
+    divisor = scale if scaled else 1.0
+    base = day_start.timestamp()
+    usable = len(raw) - (len(raw) % CANDLE_STRUCT.size)
+    bars: list[Bar] = []
+
+    for offset_s, o, c, l, h, _vol in CANDLE_STRUCT.iter_unpack(raw[:usable]):
+        if o <= 0 or h <= 0 or l <= 0 or c <= 0:
+            continue    # minuta bez handlu bywa zapisana zerami
+        bars.append(
+            Bar(
+                ts=datetime.fromtimestamp(base + offset_s, tz=timezone.utc),
+                open=o / divisor, high=h / divisor, low=l / divisor, close=c / divisor,
+                volume=0.0,
+            )
+        )
+    return bars
+
+
+def candles_look_sane(bars: list[Bar]) -> bool:
+    """Strukturalny sanity-check: gdyby kolejność pól była inna, te warunki nie przejdą."""
+    if not bars:
+        return False
+    for bar in bars[:200]:
+        if not (bar.low <= bar.open <= bar.high and bar.low <= bar.close <= bar.high):
+            return False
+    stamps = [b.ts for b in bars]
+    return stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
+
+
 def _decompress(payload: bytes) -> bytes:
     """Rozpakowuje LZMA. Pliki Dukascopy bywają bez znacznika końca strumienia,
     dlatego używamy dekompresora strumieniowego, a nie jednorazowego `lzma.decompress`."""
@@ -121,68 +190,205 @@ def decode_bi5(payload: bytes, hour_start: datetime, scale: float) -> list[Tick]
     return ticks
 
 
+class BarBuilder:
+    """Składa świece OHLC wprost z surowych plików, bez materializowania ticków.
+
+    Wcześniej pobieranie zbierało wszystkie ticki z zakresu do jednej listy i dopiero na
+    końcu je sortowało i agregowało. Rok danych to około stu milionów ticków, czyli
+    kilkanaście gigabajtów w pamięci — więcej, niż ma do dyspozycji cała funkcja. Tutaj
+    każdy tick jest natychmiast wliczany do swojego koszyka i zapominany, więc zużycie
+    pamięci zależy od liczby *świec wyjściowych*, a nie od liczby ticków.
+    """
+
+    __slots__ = ("step", "price", "_buckets")
+
+    def __init__(self, interval_minutes: int, price: str = "bid") -> None:
+        if interval_minutes <= 0:
+            raise DataError("Interwał świecy musi być większy od zera.")
+        if price not in ("bid", "ask", "mid"):
+            raise DataError("Cena świecy musi być jedną z: bid, ask, mid.")
+        self.step = interval_minutes * 60
+        self.price = price
+        self._buckets: dict[int, list[float]] = {}
+
+    def add_bar(self, epoch_seconds: float, o: float, h: float, l: float, c: float) -> None:
+        """Wlicza gotową świecę — używane, gdy źródłem są świece minutowe, a nie ticki."""
+        key = int(epoch_seconds) // self.step
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            self._buckets[key] = [o, h, l, c]
+        else:
+            if h > bucket[1]:
+                bucket[1] = h
+            if l < bucket[2]:
+                bucket[2] = l
+            bucket[3] = c
+
+    def add(self, epoch_seconds: float, value: float) -> None:
+        key = int(epoch_seconds) // self.step
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            self._buckets[key] = [value, value, value, value]  # open, high, low, close
+        else:
+            if value > bucket[1]:
+                bucket[1] = value
+            elif value < bucket[2]:
+                bucket[2] = value
+            bucket[3] = value
+
+    def feed_bi5(self, payload: bytes, hour_start: datetime, scale: float) -> int:
+        """Dekoduje plik godzinowy i od razu wlicza go w świece. Zwraca liczbę ticków."""
+        raw = _decompress(payload)
+        if not raw:
+            return 0
+
+        base = hour_start.timestamp()
+        want_bid = self.price == "bid"
+        want_ask = self.price == "ask"
+        usable = len(raw) - (len(raw) % TICK_STRUCT.size)
+        count = 0
+
+        # iter_unpack jest wyraźnie szybszy od unpack_from w pętli, a pomijanie obiektów
+        # Tick oszczędza jedną alokację na każdy z milionów rekordów.
+        for millis, ask_points, bid_points, _av, _bv in TICK_STRUCT.iter_unpack(raw[:usable]):
+            if ask_points == 0 or bid_points == 0:
+                continue
+            if want_bid:
+                value = bid_points / scale
+            elif want_ask:
+                value = ask_points / scale
+            else:
+                value = (bid_points + ask_points) / (2.0 * scale)
+            self.add(base + millis / 1000.0, value)
+            count += 1
+        return count
+
+    def feed_ticks(self, ticks: Iterable[Tick]) -> None:
+        for tick in ticks:
+            value = tick.bid if self.price == "bid" else (tick.ask if self.price == "ask" else tick.mid)
+            self.add(tick.ts.timestamp(), value)
+
+    def bars(self) -> list[Bar]:
+        """Gotowe świece, uporządkowane. Sortujemy klucze koszyków — jest ich tyle, ile
+        świec wyjściowych, a nie tyle, ile ticków."""
+        out: list[Bar] = []
+        for key in sorted(self._buckets):
+            o, h, l, c = self._buckets[key]
+            out.append(
+                Bar(
+                    ts=datetime.fromtimestamp(key * self.step, tz=timezone.utc),
+                    open=o, high=h, low=l, close=c, volume=0.0,
+                )
+            )
+        return out
+
+    def __len__(self) -> int:
+        return len(self._buckets)
+
+
 def ticks_to_bars(ticks: Iterable[Tick], interval_minutes: int, price: str = "bid") -> list[Bar]:
     """Składa ticki w świece OHLC o zadanym interwale.
 
     Domyślnie po cenie bid — tak samo, jak wykresy walutowe pokazuje TradingView.
     Okresy bez ticków (weekend, przerwa w handlu) po prostu nie tworzą świec.
     """
-    if interval_minutes <= 0:
-        raise DataError("Interwał świecy musi być większy od zera.")
-    if price not in ("bid", "ask", "mid"):
-        raise DataError("Cena świecy musi być jedną z: bid, ask, mid.")
+    builder = BarBuilder(interval_minutes, price)
+    # Wejście bywa nieuporządkowane (np. w testach), a otwarcie i zamknięcie świecy
+    # zależą od kolejności — dlatego tutaj sortujemy. Ścieżka pobierania tego nie robi,
+    # bo pliki godzinowe przychodzą chronologicznie i ticki w nich też.
+    builder.feed_ticks(sorted(ticks, key=lambda t: t.ts))
+    return builder.bars()
 
-    step = interval_minutes * 60
-    buckets: dict[int, list[float]] = {}
-    order: list[int] = []
 
-    for tick in sorted(ticks, key=lambda t: t.ts):
-        value = tick.bid if price == "bid" else (tick.ask if price == "ask" else tick.mid)
-        key = int(tick.ts.timestamp()) // step
-        bucket = buckets.get(key)
-        if bucket is None:
-            buckets[key] = [value, value, value, value]  # open, high, low, close
-            order.append(key)
+class _ConnectionPool:
+    """Połączenia HTTPS wielokrotnego użytku — po jednym na wątek roboczy.
+
+    Pobranie roku historii to ponad sześć tysięcy plików. Standardowe `urlopen` zestawia
+    dla każdego z nich osobne połączenie TCP wraz z uściskiem TLS, co przy takiej liczbie
+    plików sumuje się w minuty samego narzutu. Tutaj każdy wątek zestawia połączenie raz
+    i korzysta z niego wielokrotnie.
+    """
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+        self._all: list[http.client.HTTPSConnection] = []
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _proxy() -> Optional[tuple[str, int]]:
+        """Adres proxy, jeśli środowisko go narzuca — `http.client` nie czyta go sam."""
+        raw = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+        if not raw:
+            return None
+        parts = urllib.parse.urlsplit(raw if "://" in raw else f"http://{raw}")
+        if not parts.hostname:
+            return None
+        return parts.hostname, parts.port or 80
+
+    def get(self) -> http.client.HTTPSConnection:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+
+        host = urllib.parse.urlsplit(BASE_URL).hostname or "datafeed.dukascopy.com"
+        proxy = self._proxy()
+        if proxy:
+            conn = http.client.HTTPSConnection(proxy[0], proxy[1], timeout=TIMEOUT_SECONDS)
+            conn.set_tunnel(host, 443)
         else:
-            bucket[1] = max(bucket[1], value)
-            bucket[2] = min(bucket[2], value)
-            bucket[3] = value
+            conn = http.client.HTTPSConnection(host, timeout=TIMEOUT_SECONDS)
 
-    bars: list[Bar] = []
-    for key in order:
-        o, h, l, c = buckets[key]
-        bars.append(
-            Bar(
-                ts=datetime.fromtimestamp(key * step, tz=timezone.utc),
-                open=o,
-                high=h,
-                low=l,
-                close=c,
-                volume=0.0,
-            )
-        )
-    return sorted(bars, key=lambda b: b.ts)
+        self._local.conn = conn
+        with self._lock:
+            self._all.append(conn)
+        return conn
+
+    def drop(self) -> None:
+        """Porzuca połączenie tego wątku — używane, gdy okazało się nieżywe."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
+
+    def close_all(self) -> None:
+        with self._lock:
+            for conn in self._all:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all.clear()
+
+
+_POOL = _ConnectionPool()
 
 
 def _fetch_hour(url: str) -> Optional[bytes]:
-    """Pobiera jeden plik godzinowy.
+    """Pobiera jeden plik godzinowy, korzystając z połączenia współdzielonego w wątku.
 
     Zwraca `b""`, gdy pliku nie ma (weekend, święto — sytuacja normalna), a `None`,
     gdy mimo ponowień nie udało się go pobrać. Rozróżnienie jest istotne, bo pobranie
     wieloletniego zakresu to dziesiątki tysięcy plików: pojedyncza wywrotka nie może
     przewracać całej roboty, ale musi zostać policzona i zgłoszona.
     """
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    path = urllib.parse.urlsplit(url).path
 
     for attempt in range(RETRIES):
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-                return response.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code in (404, 410):
-                return b""  # weekend albo święto — normalne
-        except (urllib.error.URLError, TimeoutError, OSError):
-            pass
+            conn = _POOL.get()
+            conn.request("GET", path, headers={"User-Agent": USER_AGENT, "Connection": "keep-alive"})
+            response = conn.getresponse()
+            body = response.read()          # zawsze czytamy do końca, inaczej połączenie się zablokuje
+            if response.status in (404, 410):
+                return b""                  # weekend albo święto — normalne
+            if response.status == 200:
+                return body
+            _POOL.drop()                    # 5xx albo blokada — zacznijmy od świeżego połączenia
+        except Exception:
+            _POOL.drop()                    # zerwane albo przeterminowane połączenie
         if attempt < RETRIES - 1:
             time.sleep(0.3)
 
@@ -211,12 +417,16 @@ def probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, object]:
         except DataError as exc:
             return {"ok": False, "url": url, "ms": elapsed, "bytes": len(payload),
                     "error": f"Plik pobrany, ale nie daje się rozpakować: {exc}"}
+        # Skoro połączenie działa, od razu sprawdzamy, czy da się użyć szybszej ścieżki.
+        candles = verify_candles(instrument)
         return {
             "ok": ticks > 0,
             "url": url,
             "ms": elapsed,
             "bytes": len(payload),
             "ticks": ticks,
+            "candles": {"usable": candles.usable, "reason": candles.reason,
+                        "compared": candles.compared, "scaled": candles.scaled},
             "error": None if ticks else "Plik pobrany, ale pusty — archiwum odpowiada inaczej niż zwykle.",
         }
     except urllib.error.HTTPError as exc:
@@ -252,6 +462,71 @@ def hours_in_range(start: date, end: date) -> list[datetime]:
 
 
 @dataclass
+class CandleSupport:
+    """Werdykt, czy dla danego instrumentu wolno użyć gotowych świec zamiast ticków."""
+
+    usable: bool = False
+    scaled: bool = True          # czy ceny w pliku są liczbami w punktach
+    reason: str = ""
+    compared: int = 0            # ile minut udało się porównać z tickami
+
+
+def verify_candles(
+    instrument: str = DEFAULT_INSTRUMENT,
+    day: Optional[date] = None,
+    price: str = "bid",
+    cache_dir: Optional[Path] = None,
+) -> CandleSupport:
+    """Rozstrzyga, czy pliki ze świecami są czytane poprawnie — przez porównanie z tickami.
+
+    Pobiera dobę świec i jedną godzinę ticków z tej samej doby, składa ticki w świece
+    minutowe i porównuje wspólne minuty. Zgodność oznacza, że format odczytujemy dobrze;
+    rozbieżność albo brak plików oznacza, że zostajemy przy tickach.
+    """
+    day = day or date(2024, 1, 2)          # zwykły wtorek, pewny handel przez całą dobę
+    scale = instrument_scale(instrument)
+
+    payload = _fetch_hour(day_candles_url(instrument, day, price))
+    if not payload:
+        return CandleSupport(reason="Archiwum nie ma plików ze świecami pod tym adresem.")
+
+    hour = datetime(day.year, day.month, day.day, 10, tzinfo=timezone.utc)
+    tick_payload = _fetch_hour(hour_url(instrument, hour))
+    if not tick_payload:
+        return CandleSupport(reason="Nie udało się pobrać ticków do porównania.")
+
+    reference = BarBuilder(1, price)
+    reference.feed_bi5(tick_payload, hour, scale)
+    wanted = {bar.ts: bar for bar in reference.bars()}
+    if not wanted:
+        return CandleSupport(reason="Godzina odniesienia nie zawiera ticków.")
+
+    for scaled in (True, False):
+        bars = decode_candles(payload, datetime(day.year, day.month, day.day, tzinfo=timezone.utc),
+                              scale, scaled=scaled)
+        if not candles_look_sane(bars):
+            continue
+
+        matched = 0
+        for bar in bars:
+            other = wanted.get(bar.ts)
+            if other is None:
+                continue
+            if (abs(bar.open - other.open) > CANDLE_TOLERANCE
+                    or abs(bar.close - other.close) > CANDLE_TOLERANCE
+                    or abs(bar.high - other.high) > CANDLE_TOLERANCE
+                    or abs(bar.low - other.low) > CANDLE_TOLERANCE):
+                matched = 0
+                break
+            matched += 1
+
+        if matched >= 10:      # kilkanaście zgodnych minut wystarczy, żeby wykluczyć przypadek
+            return CandleSupport(True, scaled, "Świece zgadzają się z tickami.", matched)
+
+    return CandleSupport(reason="Świece nie zgadzają się z tickami — zostajemy przy tickach.")
+
+
+@dataclass
 class DownloadResult:
     """Wynik pobierania razem z informacją, dokąd faktycznie doszło.
 
@@ -266,6 +541,7 @@ class DownloadResult:
     hours_total: int = 0
     failed_hours: int = 0
     stopped_early: bool = False   # przerwane budżetem czasu, nie brakiem danych
+    source: str = "ticks"         # 'candles' albo 'ticks' — co ostatecznie zadziałało
 
     @property
     def complete(self) -> bool:
@@ -282,6 +558,7 @@ def download_window(
     progress: Optional[Callable[[int, int], None]] = None,
     cancelled: Optional[Callable[[], bool]] = None,
     deadline: Optional[float] = None,
+    use_candles: bool = True,
 ) -> DownloadResult:
     """Pobiera zakres dzień po dniu i mówi, dokąd zdążył.
 
@@ -306,11 +583,45 @@ def download_window(
     if not days:
         raise DataError("Wybrany zakres nie zawiera żadnego dnia handlowego.")
 
-    ticks: list[Tick] = []
+    builder = BarBuilder(interval_minutes, price)
     attempted = 0
 
-    def load(when: datetime) -> Optional[list[Tick]]:
-        """Zwraca ticki albo None, gdy godziny nie udało się pobrać."""
+    # Jedna próba na całe pobieranie: jeśli gotowe świece są czytelne, każda doba kosztuje
+    # jeden plik zamiast dwudziestu czterech.
+    support = verify_candles(instrument, price=price, cache_dir=cache_dir) if use_candles else CandleSupport()
+    result.source = "candles" if support.usable else "ticks"
+
+    def load_day_candles(day: date) -> Optional[list[Bar]]:
+        cached: Optional[Path] = None
+        if cache_dir is not None:
+            cached = (cache_dir / instrument / f"{day.year:04d}" / f"{day.month:02d}"
+                      / f"{day.day:02d}" / f"candles_min1_{price}.bi5")
+            if cached.exists():
+                payload = cached.read_bytes()
+            else:
+                payload = _fetch_hour(day_candles_url(instrument, day, price))
+                if payload is None:
+                    return None
+                try:
+                    cached.parent.mkdir(parents=True, exist_ok=True)
+                    cached.write_bytes(payload)
+                except OSError:
+                    pass
+        else:
+            payload = _fetch_hour(day_candles_url(instrument, day, price))
+            if payload is None:
+                return None
+
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        return decode_candles(payload, start, scale, scaled=support.scaled)
+
+    def load(when: datetime) -> Optional[tuple[datetime, bytes]]:
+        """Zwraca surową zawartość pliku albo None, gdy godziny nie udało się pobrać.
+
+        Dekodowanie zostaje poza wątkami roboczymi: rozpakowanie i przeliczenie ticków
+        w większości nie zwalnia blokady interpretera, więc równoległość i tak by tu
+        nie pomogła, a wątki mają się zajmować czekaniem na sieć.
+        """
         cached: Optional[Path] = None
         if cache_dir is not None:
             cached = (
@@ -318,7 +629,7 @@ def download_window(
                 / f"{when.day:02d}" / f"{when.hour:02d}.bi5"
             )
             if cached.exists():
-                return decode_bi5(cached.read_bytes(), when, scale)
+                return when, cached.read_bytes()
 
         payload = _fetch_hour(hour_url(instrument, when))
         if payload is None:
@@ -329,7 +640,7 @@ def download_window(
                 cached.write_bytes(payload)
             except OSError:
                 pass   # brak miejsca na cache nie może psuć pobierania
-        return decode_bi5(payload, when, scale)
+        return when, payload
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         for index, day in enumerate(days):
@@ -341,19 +652,33 @@ def download_window(
                 result.stopped_early = True
                 break
 
+            hours_today = hours_in_range(day, day)
             failed_today = 0
-            for outcome in pool.map(load, hours_in_range(day, day)):
+
+            if support.usable:
+                bars_today = load_day_candles(day)
                 attempted += 1
-                if outcome is None:
-                    failed_today += 1
+                if bars_today is None:
+                    failed_today = len(hours_today)          # doba przepadła w całości
                     result.failed_hours += 1
                 else:
-                    ticks.extend(outcome)
+                    for bar in bars_today:
+                        builder.add_bar(bar.ts.timestamp(), bar.open, bar.high, bar.low, bar.close)
                     result.hours_done += 1
+            else:
+                for outcome in pool.map(load, hours_today):
+                    attempted += 1
+                    if outcome is None:
+                        failed_today += 1
+                        result.failed_hours += 1
+                    else:
+                        when, payload = outcome
+                        builder.feed_bi5(payload, when, scale)  # od razu w świece, bez listy ticków
+                        result.hours_done += 1
 
             # Doba, z której nie przyszedł ani jeden plik, oznacza problem systemowy,
             # a nie pecha. Nie ma sensu mielić kolejnych tysięcy godzin, żeby to potwierdzić.
-            if failed_today and failed_today == len(hours_in_range(day, day)):
+            if failed_today and failed_today == len(hours_today):
                 raise DataError(
                     "Nie udało się pobrać z Dukascopy ani jednego pliku "
                     f"({failed_today} prób dla dnia {day.isoformat()}). "
@@ -365,7 +690,8 @@ def download_window(
             if progress is not None:
                 progress(result.hours_done + result.failed_hours, result.hours_total)
 
-    result.bars = ticks_to_bars(ticks, interval_minutes, price)
+    _POOL.close_all()   # nie zostawiamy otwartych gniazd po zakończonym pobieraniu
+    result.bars = builder.bars()
     return result
 
 

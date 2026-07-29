@@ -97,6 +97,14 @@ wdrożeniu bezserwerowym samo wznawia pobieranie po każdej przerwie na limit cz
 
 Przycisk **„Sprawdź połączenie"** (widoczny przy wybranym Dukascopy) pobiera jeden testowy
 plik i mówi wprost, czy archiwum jest osiągalne — przydaje się, gdy pobieranie nie rusza.
+Raportuje też, czy archiwum udostępnia gotowe świece minutowe: jeśli tak, pobieranie idzie
+nimi i jest około dwudziestokrotnie szybsze.
+
+Aplikacja **nie ufa formatowi plików ze świecami na słowo** — nie jest on oficjalnie
+udokumentowany. Przed pierwszym użyciem pobiera jedną dobę świec i jedną godzinę ticków
+z tej samej doby, składa ticki w świece minutowe i porównuje. Zgadza się — korzysta;
+nie zgadza się albo plików nie ma — cicho wraca do ticków. Dzięki temu pomyłka w odczycie
+formatu nie może przemycić błędnych cen do wyników.
 
 #### Yahoo Finance — zasięg
 

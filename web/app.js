@@ -711,9 +711,13 @@ async function probeDukascopy() {
   await withBusy('btn-duka-probe', 'Sprawdzam połączenie z archiwum…', async () => {
     const r = await callApi(`api/dukascopy/probe?instrument=${encodeURIComponent($('duka_instrument').value)}`);
     if (r.ok) {
+      const c = r.candles || {};
       out.textContent = `Połączenie działa: pobrano plik testowy (${r.bytes} B, `
         + `${r.ticks.toLocaleString('pl-PL')} ticków) w ${r.ms} ms. `
-        + 'Pobieranie zakresu powinno przejść.';
+        + (c.usable
+          ? `Archiwum udostępnia też gotowe świece minutowe (zgodne z tickami na ${c.compared} minutach) `
+            + '— pobieranie użyje ich i będzie około 24 razy szybsze.'
+          : `Gotowe świece niedostępne (${c.reason || 'brak informacji'}), pobieranie pójdzie z ticków.`);
       setStatus('Archiwum Dukascopy jest osiągalne z serwera.', 'ok');
     } else {
       out.textContent = `${r.error} Adres testowy: ${r.url}`;
