@@ -152,8 +152,31 @@ powtórki się nie mnożą.
 
 #### Masowe pobranie archiwum
 
-Zamiast pobierać instrumenty pojedynczo przez interfejs, można ściągnąć wszystko naraz
-i mieć gotowe w bibliotece:
+W panelu **„Zapisane dane"** jest sekcja **„Pobierz całe archiwum Dukascopy"**: zaznaczasz
+instrumenty, podajesz liczbę lat, długość świecy i cenę, a aplikacja ściąga to wszystko
+i zapisuje każdy instrument jako osobny zbiór. Przed startem widać oszacowanie — ile plików,
+ile danych i orientacyjnie ile czasu.
+
+Pobranie dziesięciu lat dla kompletu instrumentów to pół miliona plików godzinowych, czyli
+grubo ponad godzina pracy. Żadne pojedyncze żądanie tego nie obejmie — a przy wdrożeniu
+bezserwerowym limit to kilkadziesiąt sekund. Dlatego praca dzieli się na **krótkie kroki**:
+plan pobierania leży w tym samym magazynie co biblioteka i trzyma dla każdego instrumentu
+kursor z pierwszym niepobranym dniem. Każdy krok bierze tyle, ile zmieści się w budżecie czasu,
+i przesuwa kursor. Wynika z tego kilka wygodnych własności:
+
+- **zamknięcie karty wstrzymuje, nie kasuje** — po powrocie aplikacja sama podejmuje pracę
+  od zapisanego kursora,
+- **kolejny krok może trafić na inną instancję** i nic z tego nie wynika,
+- **„Przerwij" nie odbiera tego, co się udało** — instrumenty domknięte wcześniej zostają
+  w bibliotece,
+- **powtórka nie pobiera drugi raz tego samego** — raz ściągnięte godziny są w pamięci podręcznej.
+
+Dopiero domknięty instrument trafia do biblioteki jako jeden gotowy zbiór; niedokończone
+kawałki są tylko rusztowaniem i znikają po sklejeniu.
+
+#### To samo z wiersza poleceń
+
+Do pracy lokalnej jest też skrypt — nie wymaga otwartej przeglądarki i pobiera jednym ciągiem:
 
 ```bash
 python3 tools/pobierz_archiwum.py --sprawdz      # najpierw oszacowanie, nic nie pobiera
@@ -170,10 +193,10 @@ Pobieranie da się przerwać `Ctrl+C`. Ściągnięte godziny zostają w pamięci
 ponowne uruchomienie dokończy resztę — sprawdzone: powtórka nie sięga po ani jeden plik
 godzinowy z sieci.
 
-**Uruchamiaj to lokalnie.** Pobieranie całego archiwum trwa dłużej niż limit czasu pojedynczego
-żądania na Vercelu, więc przez interfejs wdrożenia się nie zmieści. Gotowe pliki CSV z katalogu
-`data/datasets/` wgrasz potem na wdrożenie zwykłym „Wgraj plik" — jeżeli masz tam podpięty
-magazyn obiektów, zostaną w bibliotece na stałe.
+Skrypt pobiera jednym ciągiem, bez dzielenia na kroki, więc **uruchamiaj go lokalnie** — na
+wdrożeniu bezserwerowym nie zmieściłby się w limicie czasu żądania. Tam użyj panelu opisanego
+wyżej; robi dokładnie to samo, tylko krokami. Gotowe pliki CSV z katalogu `data/datasets/`
+możesz też po prostu wgrać na wdrożenie zwykłym „Wgraj plik".
 
 #### Trwałość biblioteki
 
@@ -479,3 +502,8 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/dukascopy/chunk` | Pobiera tyle dni, ile zmieści się w limicie czasu, i zwraca surowy CSV razem z ostatnim domkniętym dniem. Klient wznawia od następnego. |
 | `GET /api/dukascopy/probe` | Pobiera jeden testowy plik godzinowy i opisuje wynik — diagnostyka na wypadek, gdy pobieranie nie rusza. |
 | `GET /api/storage/probe` | Pełny cykl zapis → odczyt → porównanie → usunięcie. Rozstrzyga, czy biblioteka przeżyje uśpienie instancji. |
+| `GET /api/archive/estimate` | Ile plików, danych i czasu zajmie masowe pobranie — bez pobierania czegokolwiek. |
+| `POST /api/archive/start` | `{"instruments": ["GBPUSD"], "years": 10, "interval_minutes": 15, "price": "bid"}` → zakłada plan pobierania. |
+| `POST /api/archive/step` | Wykonuje tyle pracy, ile mieści się w limicie czasu, i oddaje postęp. Wołane w pętli aż plan przestanie być `running`. |
+| `GET /api/archive/status` | Stan planu — także po zamknięciu przeglądarki albo z innej instancji. |
+| `POST /api/archive/cancel` | Przerywa pobieranie; instrumenty domknięte wcześniej zostają w bibliotece. |

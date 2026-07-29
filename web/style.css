@@ -341,7 +341,9 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 
 /* biblioteka danych */
 #library-table td:first-child { font-weight: 600; }
-.library-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Przyciski zostają w jednym rzędzie: gdy tabela nie mieści się w karcie, ma się przewijać
+   w poziomie, a nie łamać akcje na cztery wiersze i obcinać im napisy. */
+.library-actions { display: flex; gap: 6px; flex-wrap: nowrap; }
 .library-actions .btn { width: auto; margin: 0; padding: 3px 8px; font-size: 0.72rem; }
 .library-current { color: var(--series); }
 .library-current::after { content: " · wczytany"; font-weight: 400; color: var(--muted); }

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Masowe pobranie archiwum Dukascopy do biblioteki aplikacji.
+"""Masowe pobranie archiwum Dukascopy do biblioteki aplikacji — z wiersza poleceń.
 
 Pobiera zadany okres dla wybranych instrumentów i zapisuje każdy z nich jako gotowy
 zbiór w bibliotece, tej samej, którą widać w panelu „Zapisane dane". Po zakończeniu
 wystarczy uruchomić aplikację i wczytać dane jednym kliknięciem, bez czekania na sieć.
 
-Uruchamiaj to **lokalnie**. Przy wdrożeniu bezserwerowym katalog zapisu jest ulotny,
-więc pobrane archiwum i tak by nie przetrwało — a samo pobieranie trwa dłużej niż
-limit czasu pojedynczego żądania.
+To samo da się dziś zrobić z poziomu aplikacji: panel „Zapisane dane" → „Pobierz całe
+archiwum Dukascopy". Tamta droga dzieli pracę na kroki mieszczące się w limicie czasu
+serwera, więc działa także na wdrożeniu bezserwerowym. Ten skrypt zostaje dla pracy
+lokalnej: nie wymaga otwartej przeglądarki i pobiera jednym ciągiem, bez dzielenia.
 
 Przykłady:
 
@@ -31,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import library
+from app.archiwum import zakres_lat
 from app.csv_loader import Bar, DataError, bars_to_csv
 from app.dukascopy import INSTRUMENTS, download_window, hours_in_range
 from app.runtime import state_dir
@@ -55,9 +57,9 @@ def rozmiar(bajty: float) -> str:
 
 
 def lata_wstecz(lata: int) -> tuple[date, date]:
-    koniec = date.today() - timedelta(days=1)   # dzisiejsze godziny bywają jeszcze niegotowe
-    poczatek = max(date(2003, 1, 1), koniec - timedelta(days=round(365.25 * lata)))
-    return poczatek, koniec
+    """Ten sam zakres, co liczy aplikacja — reguła musi być jedna, inaczej skrypt i panel
+    pobierałyby różne okresy pod tą samą nazwą."""
+    return zakres_lat(lata)
 
 
 def oszacuj(instrumenty: list[str], poczatek: date, koniec: date, interwal: int) -> None:

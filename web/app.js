@@ -30,6 +30,7 @@ const state = {
   // każda strategia trzyma własny komplet ustawień, żeby przełączanie nic nie gubiło
   saved: {},
   compare: null,
+  archiveRunning: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -87,6 +88,8 @@ async function init() {
     Object.entries(data.options).forEach(([key, values]) => fillSelect($(key), values));
     fillSelect($('duka_instrument'), data.dukascopy_instruments || {});
     fillSelect($('duka_price'), (data.options || {}).tick_price || {});
+    fillSelect($('archive_price'), (data.options || {}).tick_price || {});
+    buildArchiveInstruments(data.dukascopy_instruments || {});
     state.fetchIntervals = data.fetch_intervals || {};
     state.fetchHistoryDays = data.fetch_history_days || {};
     state.intervalChoice = { yahoo: '15m', dukascopy: '15' };
@@ -97,6 +100,7 @@ async function init() {
     state.strategy = state.saved.__active || 'candle_direction';
     applyConfig(configFor(state.strategy));
     refreshLibrary();
+    resumeArchive();      // pobieranie mogło zostać wstrzymane zamknięciem karty
   } catch (err) {
     setStatus('Nie udało się pobrać ustawień z serwera: ' + err.message, 'error');
     return;
@@ -183,6 +187,15 @@ function wireEvents() {
   $('library-body').addEventListener('click', handleLibraryAction);
   $('btn-library-refresh').addEventListener('click', refreshLibrary);
   $('btn-storage-probe').addEventListener('click', probeStorage);
+  $('btn-archive-start').addEventListener('click', startArchive);
+  $('btn-archive-cancel').addEventListener('click', cancelArchive);
+  ['archive_years', 'archive_interval'].forEach((id) => {
+    $(id).addEventListener('change', refreshArchiveEstimate);
+    $(id).addEventListener('input', refreshArchiveEstimate);
+  });
+  $('archive-panel').addEventListener('toggle', () => {
+    if ($('archive-panel').open) refreshArchiveEstimate();
+  });
   $('btn-compare').addEventListener('click', runCompare);
   $('btn-compare-close').addEventListener('click', () => {
     state.compare = null;
@@ -1004,9 +1017,9 @@ async function refreshLibrary() {
   }
   state.library = data.datasets || [];
   const usage = data.usage || {};
-  // Panel pokazujemy też przy pustej bibliotece, jeśli magazyn jest ulotny — to właśnie
-  // wtedy ostrzeżenie ma sens, bo pustka bywa skutkiem uśpienia, a nie braku pobrań.
-  $('library-card').hidden = state.library.length === 0 && data.persistent !== false;
+  // Panel jest widoczny zawsze: przy pustej bibliotece mieści ostrzeżenie o ulotnym zapisie
+  // i wejście do masowego pobrania archiwum — a to właśnie wtedy jest najbardziej potrzebne.
+  $('library-card').hidden = false;
 
   const gdzie = usage.backend ? ` · magazyn: ${usage.backend}` : '';   // trafia do textContent
   $('library-sub').textContent = state.library.length
@@ -1107,6 +1120,179 @@ async function handleLibraryAction(event) {
     refreshLibrary();
     setStatus('Zbiór usunięty z biblioteki.', 'ok');
   }
+}
+
+/* ---------------- masowe pobranie archiwum ---------------- */
+
+const ARCHIVE_STATES = {
+  pending: 'czeka',
+  running: 'pobiera…',
+  done: 'gotowe',
+  empty: 'brak danych',
+  error: 'błąd',
+};
+
+function buildArchiveInstruments(instruments) {
+  const host = $('archive-instruments');
+  host.innerHTML = '';
+  Object.entries(instruments).forEach(([code, label]) => {
+    const wrap = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = code;
+    input.className = 'archive-instrument';
+    input.checked = true;
+    input.addEventListener('change', refreshArchiveEstimate);
+    wrap.append(input, document.createTextNode(label));
+    host.append(wrap);
+  });
+}
+
+function archiveChoice() {
+  return {
+    instruments: [...document.querySelectorAll('.archive-instrument:checked')].map((i) => i.value),
+    years: Number($('archive_years').value) || 10,
+    interval_minutes: Number($('archive_interval').value),
+    price: $('archive_price').value,
+  };
+}
+
+async function refreshArchiveEstimate() {
+  const wybor = archiveChoice();
+  const out = $('archive-estimate');
+  if (!wybor.instruments.length) {
+    out.textContent = 'Zaznacz przynajmniej jeden instrument.';
+    return;
+  }
+  const zapytanie = `instruments=${wybor.instruments.join(',')}`
+    + `&years=${wybor.years}&interval_minutes=${wybor.interval_minutes}`;
+  let e;
+  try {
+    e = await callApi(`api/archive/estimate?${zapytanie}`, undefined, { allowRecovery: false });
+  } catch {
+    return;                      // oszacowanie to podpowiedź, jego brak nie blokuje pobierania
+  }
+  // Prędkości łącza nie da się zgadnąć, więc czas podajemy widełkami zamiast udawać precyzję.
+  out.textContent = `${e.date_from} → ${e.date_to} · `
+    + `${e.instruments} ${e.instruments === 1 ? 'instrument' : 'instrumentów'} · `
+    + `${Number(e.files_total).toLocaleString('pl-PL')} plików godzinowych · `
+    + `~${formatBytes(e.bytes_total)} danych · `
+    + `orientacyjnie ${formatDuration(e.seconds_fast)}–${formatDuration(e.seconds_slow)}.`;
+}
+
+function formatDuration(sekundy) {
+  if (sekundy < 90) return `${Math.round(sekundy)} s`;
+  if (sekundy < 5400) return `${Math.round(sekundy / 60)} min`;
+  return `${(sekundy / 3600).toFixed(1)} h`;
+}
+
+async function startArchive() {
+  const wybor = archiveChoice();
+  if (!wybor.instruments.length) {
+    setStatus('Zaznacz przynajmniej jeden instrument do pobrania.', 'error');
+    return;
+  }
+  const e = `${wybor.years} ${wybor.years === 1 ? 'rok' : 'lat'}`;
+  if (!window.confirm(`Pobrać ${e} historii dla ${wybor.instruments.length} instrumentów?\n\n`
+    + 'Może to potrwać od kilkunastu minut do kilku godzin. Postęp zapisuje się na bieżąco, '
+    + 'więc przerwanie niczego nie kasuje — kolejne uruchomienie ruszy od tego samego miejsca.')) return;
+
+  let ruszylo = false;
+  await withBusy('btn-archive-start', 'Zakładam plan pobierania…', async () => {
+    const dane = await callApi('api/archive/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(wybor),
+    }, { allowRecovery: false });
+    renderArchive(dane);
+    ruszylo = dane.plan && dane.plan.state === 'running';
+  });
+  if (ruszylo) runArchiveLoop();
+}
+
+async function resumeArchive() {
+  let dane;
+  try {
+    dane = await callApi('api/archive/status', undefined, { allowRecovery: false });
+  } catch {
+    return;
+  }
+  if (!dane.plan) return;
+  renderArchive(dane);
+  if (dane.plan.state !== 'running') return;   // zakończony plan zostaje do wglądu, nie rozwija panelu
+  $('archive-panel').open = true;
+  setStatus('Wznawiam przerwane pobieranie archiwum.', 'ok');
+  runArchiveLoop();
+}
+
+async function runArchiveLoop() {
+  if (state.archiveRunning) return;         // dwie pętle deptałyby sobie po krokach
+  state.archiveRunning = true;
+  $('btn-archive-start').disabled = true;
+  try {
+    for (;;) {
+      const dane = await callApi('api/archive/step', { method: 'POST' }, { allowRecovery: false });
+      renderArchive(dane);
+      refreshLibrary();                     // gotowe instrumenty mają być widać od razu
+      if (!dane.plan || dane.plan.state !== 'running') {
+        setStatus(archiveSummary(dane), dane.plan && dane.plan.state === 'done' ? 'ok' : '');
+        break;
+      }
+    }
+  } catch (err) {
+    setStatus('Pobieranie archiwum przerwane: ' + err.message
+      + ' Postęp jest zapisany — kliknij „Pobierz do biblioteki”, żeby ruszyć dalej.', 'error');
+  } finally {
+    state.archiveRunning = false;
+    $('btn-archive-start').disabled = false;
+  }
+}
+
+function archiveSummary(dane) {
+  const plan = dane.plan || {};
+  const gotowe = (plan.instruments || []).filter((p) => p.state === 'done').length;
+  const bledy = (plan.instruments || []).filter((p) => p.state === 'error').length;
+  if (plan.state === 'cancelled') {
+    return `Pobieranie przerwane. ${gotowe} instrumentów zdążyło trafić do biblioteki.`;
+  }
+  return `Archiwum pobrane: ${gotowe} z ${(plan.instruments || []).length} instrumentów`
+    + (bledy ? `, ${bledy} nieudanych — szczegóły w tabeli poniżej.` : '.');
+}
+
+async function cancelArchive() {
+  // Bieżący odcinek dobiegnie końca — przerwanie działa między odcinkami, nie w ich środku.
+  await withBusy('btn-archive-cancel', 'Przerywam pobieranie — kończę bieżący odcinek…', async () => {
+    renderArchive(await callApi('api/archive/cancel', { method: 'POST' }, { allowRecovery: false }));
+  });
+}
+
+function renderArchive(dane) {
+  const plan = dane && dane.plan;
+  const postep = (dane && dane.progress) || {};
+  $('archive-table-wrap').hidden = !plan;
+  $('archive-progress').hidden = !plan || plan.state !== 'running';
+  if (!plan) return;
+
+  $('archive-fill').style.width = `${Math.round((postep.fraction || 0) * 100)}%`;
+  const zostalo = postep.seconds_left ? ` · zostało ~${formatDuration(postep.seconds_left)}` : '';
+  $('archive-text').textContent =
+    `${postep.instruments_done}/${postep.instruments_total} instrumentów · `
+    + `${Number(postep.days_done).toLocaleString('pl-PL')} z `
+    + `${Number(postep.days_total).toLocaleString('pl-PL')} dni${zostalo}`;
+
+  const przerwane = plan.state === 'cancelled';
+  $('archive-body').innerHTML = (plan.instruments || []).map((p) => {
+    const udzial = p.days_total ? Math.round((p.days_done / p.days_total) * 100) : 0;
+    // Po przerwaniu nic już nie „pobiera" ani nie „czeka" — pokazywanie tego wprowadzałoby w błąd.
+    const stan = przerwane && (p.state === 'running' || p.state === 'pending')
+      ? 'przerwane' : (ARCHIVE_STATES[p.state] || p.state);
+    return `<tr>
+      <td>${escapeHtml(p.label)}</td>
+      <td class="num">${udzial}%</td>
+      <td class="num">${p.bars ? Number(p.bars).toLocaleString('pl-PL') : '—'}</td>
+      <td>${escapeHtml(stan)}${p.note ? ` — ${escapeHtml(p.note)}` : ''}</td>
+    </tr>`;
+  }).join('');
 }
 
 /* ---------------- porównanie obu strategii ---------------- */

@@ -29,7 +29,7 @@ from .dukascopy import (
     probe as probe_dukascopy,
 )
 from .engine import run_backtest
-from . import library, storage
+from . import archiwum, library, storage
 from .fetch import DEFAULT_SYMBOL, fetch_bars, intervals_payload, max_history_days
 from .runtime import (
     BASE_DIR,
@@ -482,6 +482,77 @@ def list_datasets() -> dict[str, Any]:
 def storage_probe() -> dict[str, Any]:
     """Sprawdza pełnym cyklem, czy zapis biblioteki jest trwały na tym wdrożeniu."""
     return storage.probe()
+
+
+# --- masowe pobranie archiwum -------------------------------------------------------
+#
+# Całe archiwum nie mieści się w jednym żądaniu — ani lokalnie (godziny pracy), ani tym
+# bardziej na Vercelu (kilkadziesiąt sekund). Plan pobierania leży więc w magazynie razem
+# z biblioteką, a przeglądarka wywołuje `krok` tyle razy, ile trzeba. Każdy krok może
+# trafić na inną instancję i podejmie pracę od kursora zapisanego przez poprzedni.
+
+
+class ArchiveRequest(BaseModel):
+    instruments: list[str] = Field(default_factory=lambda: sorted(instruments_payload()))
+    years: int = 10
+    interval_minutes: int = 15
+    price: str = "bid"
+
+
+def _archive_payload(plan: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if plan is None:
+        return {"plan": None}
+    return {"plan": plan, "progress": archiwum.postep(plan)}
+
+
+def _archive_budget() -> float:
+    """Ile sekund wolno zająć jednemu krokowi.
+
+    Na platformie bezserwerowej to część limitu żądania, z zapasem na sklejanie i odpowiedź.
+    Lokalnie limitu nie ma, ale krótszy krok daje częstszy postęp — a przerwanie w połowie
+    kosztuje wtedy mniej.
+    """
+    return MAX_REQUEST_SECONDS * 0.65 if IS_SERVERLESS else 20.0
+
+
+@app.get("/api/archive/estimate")
+def archive_estimate(instruments: str = "", years: int = 10, interval_minutes: int = 15) -> dict[str, Any]:
+    """Ile to będzie plików, świec, megabajtów i czasu — zanim cokolwiek ruszy."""
+    kody = [k for k in instruments.upper().split(",") if k] or sorted(instruments_payload())
+    return archiwum.szacunek(kody, max(1, min(archiwum.MAX_LAT, years)), interval_minutes)
+
+
+@app.get("/api/archive/status")
+def archive_status() -> dict[str, Any]:
+    """Stan planu — także po odświeżeniu strony albo powrocie następnego dnia."""
+    return _archive_payload(archiwum.stan())
+
+
+@app.post("/api/archive/start")
+def archive_start(request: ArchiveRequest) -> dict[str, Any]:
+    plan = archiwum.zacznij(
+        request.instruments, request.years, request.interval_minutes, request.price
+    )
+    return _archive_payload(plan)
+
+
+@app.post("/api/archive/step")
+def archive_step() -> dict[str, Any]:
+    """Wykonuje tyle pracy, ile mieści się w budżecie czasu, i oddaje stan planu."""
+    return _archive_payload(archiwum.krok(_archive_budget(), cache_dir=DUKASCOPY_CACHE))
+
+
+@app.post("/api/archive/cancel")
+def archive_cancel() -> dict[str, Any]:
+    """Przerywa pobieranie. Instrumenty domknięte wcześniej zostają w bibliotece."""
+    return _archive_payload(archiwum.przerwij())
+
+
+@app.delete("/api/archive")
+def archive_forget() -> dict[str, Any]:
+    """Usuwa plan, żeby dało się zacząć od czysta."""
+    archiwum.zapomnij()
+    return {"ok": True}
 
 
 @app.post("/api/datasets/{dataset_id}/open")

@@ -143,6 +143,34 @@ historii wszystkich instrumentów naraz, a gotowe pliki CSV wgrasz potem na wdro
 
 ---
 
+## Pobranie całego archiwum na wdrożeniu
+
+W panelu **Zapisane dane** jest sekcja **„Pobierz całe archiwum Dukascopy"**: zaznaczasz
+instrumenty, podajesz liczbę lat, długość świecy i cenę. Przed startem widać oszacowanie —
+ile plików, ile danych i orientacyjnie ile czasu.
+
+Dziesięć lat dla kompletu instrumentów to pół miliona plików godzinowych. Nie mieści się to
+w żadnym pojedynczym żądaniu, więc praca dzieli się na krótkie kroki, każdy w granicach
+`maxDuration`. Plan pobierania leży w magazynie razem z biblioteką, dzięki czemu kolejny krok
+może trafić na dowolną instancję i podejmuje pracę od zapisanego kursora.
+
+W praktyce:
+
+* **Zostaw kartę otwartą.** To przeglądarka wywołuje kolejne kroki. Zamknięcie jej wstrzymuje
+  pobieranie, nie kasuje — po powrocie aplikacja sama je podejmuje.
+* **Podepnij najpierw magazyn.** Bez niego pobrane archiwum zniknie razem z instancją i cała
+  praca pójdzie na marne.
+* **Plan Hobby wystarczy**, tylko potrwa dłużej: przy limicie 60 s krok bierze około 40 s pracy,
+  więc kroków jest po prostu więcej. Na planie Pro (`maxDuration` 300) idzie to pięciokrotnie
+  szybciej — patrz sekcja o planie Pro niżej.
+* **Zacznij od jednego instrumentu i jednego roku.** Zobaczysz realne tempo swojego wdrożenia,
+  zanim zamówisz komplet.
+
+Alternatywa bez czekania: uruchom `tools/pobierz_archiwum.py` u siebie na komputerze
+i wgraj gotowe pliki CSV przez „Wgraj plik". Przy podpiętym magazynie zostaną na stałe.
+
+---
+
 ## Ustawienia opcjonalne
 
 Wszystkie mają rozsądne wartości domyślne — sięgaj po nie tylko wtedy, gdy coś rzeczywiście

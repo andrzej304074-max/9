@@ -73,7 +73,11 @@ class LocalStorage:
 
     def write(self, key: str, text: str) -> bool:
         try:
-            self._path(key).write_text(text, encoding="utf-8")
+            sciezka = self._path(key)
+            # Klucze bywają wielopoziomowe (`archiwum/GBPUSD/0001.csv`) — w magazynie obiektów
+            # to zwykły tekst, na dysku muszą powstać katalogi.
+            sciezka.parent.mkdir(parents=True, exist_ok=True)
+            sciezka.write_text(text, encoding="utf-8")
             return True
         except OSError:
             return False

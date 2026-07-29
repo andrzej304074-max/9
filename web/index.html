@@ -361,6 +361,66 @@
           <tbody id="library-body"></tbody>
         </table>
       </div>
+
+      <!-- MASOWE POBRANIE — całe archiwum wprost do biblioteki, bez skryptów i terminala -->
+      <details class="subsection" id="archive-panel">
+        <summary>Pobierz całe archiwum Dukascopy</summary>
+        <p class="hint">Ściąga zadany okres dla wybranych instrumentów i zapisuje każdy jako
+          osobny zbiór powyżej. Praca dzieli się na krótkie kroki, więc mieści się w limicie
+          czasu serwera — zamknięcie karty ją wstrzymuje, a nie kasuje.</p>
+
+        <div class="field">
+          <span class="label">Instrumenty</span>
+          <div class="weekdays" id="archive-instruments"></div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="archive_years">Ile lat wstecz</label>
+            <input type="number" id="archive_years" value="10" min="1" max="25" step="1">
+          </div>
+          <div class="field">
+            <label for="archive_interval">Długość świecy</label>
+            <select id="archive_interval">
+              <option value="1">1 minuta</option>
+              <option value="5">5 minut</option>
+              <option value="15" selected>15 minut</option>
+              <option value="30">30 minut</option>
+              <option value="60">1 godzina</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="archive_price">Cena</label>
+            <select id="archive_price"></select>
+          </div>
+        </div>
+
+        <p class="hint" id="archive-estimate"></p>
+
+        <div class="progress" id="archive-progress" hidden>
+          <div class="progress-track"><div class="progress-fill" id="archive-fill"></div></div>
+          <div class="progress-row">
+            <span class="progress-text" id="archive-text"></span>
+            <button type="button" class="btn btn-ghost btn-small" id="btn-archive-cancel">Przerwij</button>
+          </div>
+        </div>
+
+        <div class="table-scroll" id="archive-table-wrap" hidden>
+          <table class="data-table" id="archive-table">
+            <thead>
+              <tr>
+                <th scope="col">Instrument</th>
+                <th scope="col">Postęp</th>
+                <th scope="col">Świec</th>
+                <th scope="col">Stan</th>
+              </tr>
+            </thead>
+            <tbody id="archive-body"></tbody>
+          </table>
+        </div>
+
+        <button type="button" class="btn btn-ghost" id="btn-archive-start">Pobierz do biblioteki</button>
+      </details>
     </section>
 
   <div id="results" hidden>
