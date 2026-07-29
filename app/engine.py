@@ -217,7 +217,11 @@ def _risk_distance(
     cfg: BacktestConfig, direction: int, entry: float, low: float, high: float,
     body_low: Optional[float] = None, body_high: Optional[float] = None,
 ) -> float:
-    if cfg.sl_method == "candle_range":
+    if cfg.sl_method == "candle_span":
+        # Sama szerokość świecy, odmierzana od wejścia. W odróżnieniu od „wychyleń”
+        # nie zależy od tego, gdzie wypadło wejście — luka na otwarciu nie rozciąga stopa.
+        raw = high - low
+    elif cfg.sl_method == "candle_range":
         raw = (entry - low) if direction == LONG else (high - entry)
     elif cfg.sl_method == "candle_body":
         # Krańce korpusu leżą bliżej ceny niż knoty, więc stop jest ciaśniejszy,
@@ -402,7 +406,9 @@ def _breakout_risk_distance(
     stop ląduje dokładnie na przeciwnej granicy świecy, a przy grze przeciwnej — tyle samo
     po drugiej stronie wejścia.
     """
-    if cfg.sl_method in ("candle_range", "candle_body"):
+    if cfg.sl_method == "candle_span":
+        raw = r_high - r_low          # odległość między wybranymi granicami, nie od wejścia
+    elif cfg.sl_method in ("candle_range", "candle_body"):
         raw = (entry - r_low) if side == "up" else (r_high - entry)
     elif cfg.sl_method == "fixed_pips":
         raw = cfg.sl_pips * cfg.pip_size

@@ -382,6 +382,9 @@ function syncConditionalFields() {
       : 'Stop ląduje na dołku świecy (dla longa) albo na jej szczycie (dla shorta).',
     candle_body: 'Stop ląduje na krańcu korpusu zamiast na końcu knota — bliżej ceny, '
       + 'więc ciaśniejszy, a przy stałym RR take profit odpowiednio bliżej.',
+    candle_span: 'Dystans stopa równa się szerokości świecy (szczyt − dołek) i jest odmierzany '
+      + 'od ceny wejścia. W odróżnieniu od „wychyleń” luka na otwarciu nie rozciąga ryzyka — '
+      + 'stop zawsze ma tyle samo, ile mierzy świeca.',
   }[$('sl_method').value] || '';
 
   const slMethod = $('sl_method').value;

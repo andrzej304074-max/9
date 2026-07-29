@@ -81,6 +81,7 @@ ENTRY_MODES = {
 SL_METHODS = {
     "candle_range": "Pełne wychylenia świecy (szczyt / dołek)",
     "candle_body": "Krańce korpusu (otwarcie / zamknięcie)",
+    "candle_span": "Pełna rozpiętość świecy (szczyt − dołek)",
     "fixed_pips": "Stała liczba pipsów",
     "percent": "Procent ceny wejścia",
 }

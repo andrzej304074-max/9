@@ -588,3 +588,65 @@ def test_stop_level_choice_applies_downwards_too():
     trade = played(run(bars, breakout_stop_levels="body"))[0]
     assert trade.direction == SHORT
     assert trade.stop_loss == pytest.approx(1.2010)      # górny kraniec korpusu
+
+
+# --- stop równy rozpiętości świecy --------------------------------------------------
+
+
+def gapped_breakout() -> list[Bar]:
+    """Świeca sygnałowa 1,1980–1,2030 (50 pipsów), wybicie z luką na otwarciu."""
+    return [
+        bar("08:00", 1.2000, 1.2030, 1.1980, 1.2010),
+        quiet("08:15", 1.2010),
+        bar("08:30", 1.2045, 1.2050, 1.2044, 1.2048),   # otwarcie już 15 pipsów nad poziomem
+        quiet("08:45", 1.2048),
+    ]
+
+
+def test_a_gap_stretches_the_edge_based_stop():
+    """Przy stopie „na wychyleniu” luka powiększa ryzyko ponad szerokość świecy."""
+    trade = played(run(gapped_breakout()))[0]
+    assert trade.entry_price == pytest.approx(1.2045)
+    assert trade.risk_distance == pytest.approx(0.0065)      # 65 pipsów zamiast 50
+
+
+def test_span_stop_always_equals_the_candle_width():
+    """Sedno tej metody: ryzyko to szerokość świecy, niezależnie od miejsca wejścia."""
+    trade = played(run(gapped_breakout(), sl_method="candle_span"))[0]
+    assert trade.entry_price == pytest.approx(1.2045)
+    assert trade.risk_distance == pytest.approx(0.0050)      # dokładnie rozpiętość świecy
+    assert trade.stop_loss == pytest.approx(1.1995)          # wejście minus rozpiętość
+
+
+def test_span_stop_matches_the_edge_stop_when_there_is_no_gap():
+    """Bez luki obie metody dają to samo — różnią się dopiero na luce."""
+    bars = [
+        bar("08:00", 1.2000, 1.2030, 1.1980, 1.2010),
+        quiet("08:15", 1.2010),
+        bar("08:30", 1.2025, 1.2040, 1.2024, 1.2035),
+        quiet("08:45", 1.2035),
+    ]
+    a = played(run(bars))[0]
+    b = played(run(bars, sl_method="candle_span"))[0]
+    assert a.risk_distance == pytest.approx(b.risk_distance) == pytest.approx(0.0050)
+    assert a.stop_loss == pytest.approx(b.stop_loss)
+
+
+def test_span_stop_works_downwards():
+    bars = [
+        bar("08:00", 1.2010, 1.2030, 1.1980, 1.2000),
+        quiet("08:15", 1.2000),
+        bar("08:30", 1.1965, 1.1966, 1.1960, 1.1962),   # luka w dół
+        quiet("08:45", 1.1962),
+    ]
+    trade = played(run(bars, sl_method="candle_span"))[0]
+    assert trade.direction == SHORT
+    assert trade.risk_distance == pytest.approx(0.0050)
+    assert trade.stop_loss == pytest.approx(trade.entry_price + 0.0050)
+
+
+def test_span_follows_the_chosen_stop_levels():
+    """Przy stopie liczonym z korpusu rozpiętość też jest z korpusu."""
+    trade = played(run(gapped_breakout(), sl_method="candle_span",
+                       breakout_stop_levels="body"))[0]
+    assert trade.risk_distance == pytest.approx(0.0010)      # korpus 1,2000–1,2010

@@ -560,3 +560,12 @@ def test_body_stop_works_for_shorts():
     t = [x for x in run_with(bars, sl_method="candle_body").trades if x.is_executed()][0]
     assert t.direction == SHORT
     assert t.stop_loss == pytest.approx(1.2020)            # otwarcie, nie szczyt 1,2060
+
+
+def test_span_stop_in_the_direction_strategy():
+    """Strategia 1: ryzyko równe szerokości świecy, odmierzane od wejścia."""
+    bars = signal_candle(1.2000, 1.2040, 1.1990, 1.2020)     # rozpiętość 50 pipsów
+    t = [x for x in run_with(bars, sl_method="candle_span").trades if x.is_executed()][0]
+    assert t.risk_distance == pytest.approx(0.0050)
+    assert t.stop_loss == pytest.approx(t.entry_price - 0.0050)
+    assert (t.take_profit - t.entry_price) / t.risk_distance == pytest.approx(4.0)
