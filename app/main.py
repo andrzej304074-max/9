@@ -29,7 +29,7 @@ from .dukascopy import (
     probe as probe_dukascopy,
 )
 from .engine import run_backtest
-from . import library
+from . import library, storage
 from .fetch import DEFAULT_SYMBOL, fetch_bars, intervals_payload, max_history_days
 from .runtime import (
     BASE_DIR,
@@ -468,13 +468,20 @@ class RenameRequest(BaseModel):
 @app.get("/api/datasets")
 def list_datasets() -> dict[str, Any]:
     """Zbiory, które już przez aplikację przeszły — do ponownego użycia bez pobierania."""
+    usage = library.usage()
     return {
         "datasets": library.entries(),
-        "usage": library.usage(),
-        # Na Vercelu katalog zapisu jest ulotny; front ma o tym uprzedzić, zamiast
-        # obiecywać trwałe archiwum, którego platforma nie zapewnia.
-        "persistent": not IS_SERVERLESS,
+        "usage": usage,
+        # O trwałości decyduje magazyn, nie samo środowisko: bezserwerowe wdrożenie
+        # z podpiętym magazynem obiektów przechowuje dane na stałe.
+        "persistent": bool(usage.get("persistent")),
     }
+
+
+@app.get("/api/storage/probe")
+def storage_probe() -> dict[str, Any]:
+    """Sprawdza pełnym cyklem, czy zapis biblioteki jest trwały na tym wdrożeniu."""
+    return storage.probe()
 
 
 @app.post("/api/datasets/{dataset_id}/open")

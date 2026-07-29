@@ -57,6 +57,9 @@ warto o nich wiedzieć:
   mniej więcej 20 MB CSV, czyli kilkunastu latom świec 15-minutowych.
 - **Pamięć między żądaniami jest ulotna** — gdy żądanie trafi na świeżą instancję, front sam
   wysyła dane ponownie i powtarza operację. Użytkownik widzi tylko dłuższą chwilę oczekiwania.
+- **Biblioteka zapisanych zbiorów jest trwała po podpięciu magazynu obiektów** (Vercel Blob,
+  dwie minuty konfiguracji — patrz [DEPLOY.md](DEPLOY.md)). Bez niego zapis idzie do katalogu
+  tymczasowego i znika razem z uśpieniem instancji; panel mówi o tym wprost.
 
 Do codziennej pracy z wieloletnią historią wygodniejsza jest wersja lokalna.
 
@@ -167,14 +170,32 @@ Pobieranie da się przerwać `Ctrl+C`. Ściągnięte godziny zostają w pamięci
 ponowne uruchomienie dokończy resztę — sprawdzone: powtórka nie sięga po ani jeden plik
 godzinowy z sieci.
 
-**Uruchamiaj to lokalnie.** Przy wdrożeniu bezserwerowym katalog zapisu jest ulotny, więc
-pobrane archiwum i tak by nie przetrwało, a samo pobieranie trwa dłużej niż limit czasu
-pojedynczego żądania.
+**Uruchamiaj to lokalnie.** Pobieranie całego archiwum trwa dłużej niż limit czasu pojedynczego
+żądania na Vercelu, więc przez interfejs wdrożenia się nie zmieści. Gotowe pliki CSV z katalogu
+`data/datasets/` wgrasz potem na wdrożenie zwykłym „Wgraj plik" — jeżeli masz tam podpięty
+magazyn obiektów, zostaną w bibliotece na stałe.
 
-**Trwałość zależy od tego, gdzie aplikacja działa.** Lokalnie pliki leżą w katalogu `data/`
-i przeżywają restart. Przy wdrożeniu bezserwerowym jedynym zapisywalnym miejscem jest katalog
-tymczasowy, ulotny i lokalny dla instancji — biblioteka jest tam wygodą w obrębie sesji,
-a nie archiwum. Panel mówi o tym wprost, a przycisk „Pobierz CSV" pozwala zrobić trwałą kopię.
+#### Trwałość biblioteki
+
+Lokalnie pliki leżą w katalogu `data/datasets/` i przeżywają restart — nie ma tu o czym myśleć.
+
+Przy wdrożeniu bezserwerowym jedynym zapisywalnym miejscem jest katalog tymczasowy: ulotny
+i lokalny dla instancji. Bez dodatkowego kroku biblioteka jest tam wygodą w obrębie sesji,
+a nie archiwum. Żeby zapis przetrwał uśpienie i kolejne wdrożenia, podepnij magazyn obiektów
+**Vercel Blob** — zajmuje to dwie minuty i jest opisane krok po kroku w [DEPLOY.md](DEPLOY.md).
+Aplikacja szuka zmiennej `BLOB_READ_WRITE_TOKEN`, którą Vercel dodaje sam przy podpięciu magazynu.
+
+Przełączenie niczego nie gubi: odczyt sprawdza najpierw magazyn, potem dysk instancji, więc
+zbiory zapisane wcześniej są nadal widoczne. W drugą stronę tak samo — gdy magazyn przestaje
+odpowiadać, aplikacja pracuje dalej na dysku i mówi o tym w panelu, zamiast obiecywać trwałość,
+której akurat nie ma. Przycisk **„Sprawdź magazyn"** wykonuje pełny cykl zapis → odczyt →
+porównanie → usunięcie i rozstrzyga jednym kliknięciem, co się faktycznie dzieje na Twoim
+wdrożeniu.
+
+> Rozmowa z Vercel Blob idzie po jego API REST i **nie została sprawdzona na żywo** — w środowisku,
+> w którym projekt powstawał, ruch wychodzący był zablokowany. Testy pokrywają naszą stronę
+> umowy na atrapie magazynu; drugą stronę rozstrzyga dopiero „Sprawdź magazyn" na wdrożeniu.
+> Dlatego każda operacja ma odwrót na dysk — awaria magazynu nie zatrzymuje aplikacji.
 
 ### Inne instrumenty niż GBP/USD
 
@@ -457,3 +478,4 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `GET /api/datasets/{id}/csv` | Pobranie zapisanego zbioru jako pliku CSV. |
 | `POST /api/dukascopy/chunk` | Pobiera tyle dni, ile zmieści się w limicie czasu, i zwraca surowy CSV razem z ostatnim domkniętym dniem. Klient wznawia od następnego. |
 | `GET /api/dukascopy/probe` | Pobiera jeden testowy plik godzinowy i opisuje wynik — diagnostyka na wypadek, gdy pobieranie nie rusza. |
+| `GET /api/storage/probe` | Pełny cykl zapis → odczyt → porównanie → usunięcie. Rozstrzyga, czy biblioteka przeżyje uśpienie instancji. |

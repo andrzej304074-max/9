@@ -16,10 +16,9 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from pathlib import Path
 from typing import Any, Optional
 
-from .runtime import state_dir
+from . import storage
 
 INDEX_NAME = "index.json"
 
@@ -29,46 +28,30 @@ def dataset_id_for(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def _root() -> Path:
-    root = state_dir() / "datasets"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _index_path() -> Path:
-    return _root() / INDEX_NAME
-
-
 def _read_index() -> dict[str, dict[str, Any]]:
-    path = _index_path()
-    if not path.exists():
+    raw = storage.active().read(INDEX_NAME)
+    if raw is None:
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(raw)
         return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return {}   # uszkodzony indeks nie może wywrócić aplikacji
 
 
 def _write_index(index: dict[str, dict[str, Any]]) -> None:
-    try:
-        _index_path().write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
-    except OSError:
-        pass        # brak miejsca albo katalog tylko do odczytu — praca trwa dalej
+    storage.active().write(INDEX_NAME, json.dumps(index, ensure_ascii=False, indent=1))
 
 
-def _csv_path(dataset_id: str) -> Path:
-    return _root() / f"{dataset_id}.csv"
+def _key(dataset_id: str) -> str:
+    return f"{dataset_id}.csv"
 
 
 def save(dataset_id: str, text: str, name: str, source: str, meta: Optional[dict[str, Any]] = None) -> None:
     """Zapisuje zbiór i jego opis. Powtórny zapis tego samego identyfikatora tylko
     odświeża opis — treść jest przecież identyczna, bo identyfikator z niej wynika."""
-    path = _csv_path(dataset_id)
-    try:
-        if not path.exists():
-            path.write_text(text, encoding="utf-8")
-    except OSError:
+    magazyn = storage.active()
+    if not magazyn.exists(_key(dataset_id)) and not magazyn.write(_key(dataset_id), text):
         return      # nie udało się zapisać — zbiór zostaje tylko w pamięci procesu
 
     index = _read_index()
@@ -110,18 +93,15 @@ def describe(dataset_id: str, name: str, source: str, meta: dict[str, Any]) -> N
 def entries() -> list[dict[str, Any]]:
     """Zapisane zbiory, od ostatnio używanych. Pozycje bez pliku na dysku odpadają."""
     index = _read_index()
-    out = [e for i, e in index.items() if _csv_path(i).exists()]
+    magazyn = storage.active()
+    out = [e for i, e in index.items() if magazyn.exists(_key(i))]
     out.sort(key=lambda e: e.get("used_at", 0), reverse=True)
     return out
 
 
 def get_text(dataset_id: str) -> Optional[str]:
-    path = _csv_path(dataset_id)
-    if not path.exists():
-        return None
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = storage.active().read(_key(dataset_id))
+    if text is None:
         return None
     touch(dataset_id)
     return text
@@ -149,13 +129,10 @@ def rename(dataset_id: str, name: str) -> bool:
 
 def remove(dataset_id: str) -> bool:
     index = _read_index()
-    existed = dataset_id in index or _csv_path(dataset_id).exists()
+    existed = dataset_id in index or storage.active().exists(_key(dataset_id))
     index.pop(dataset_id, None)
     _write_index(index)
-    try:
-        _csv_path(dataset_id).unlink(missing_ok=True)
-    except OSError:
-        pass
+    storage.active().delete(_key(dataset_id))
     return existed
 
 
@@ -165,4 +142,5 @@ def usage() -> dict[str, Any]:
     return {
         "count": len(items),
         "bytes": sum(int(e.get("bytes") or 0) for e in items),
+        **storage.active().describe(),
     }

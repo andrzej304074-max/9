@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -209,9 +210,20 @@ def test_an_entry_without_its_file_is_hidden(client, tmp_path):
     assert biblioteka(client) == []
 
 
-def test_the_library_reports_whether_storage_survives(client):
-    """Przy wdrożeniu bezserwerowym nie wolno obiecywać trwałego archiwum."""
+def test_a_library_on_ordinary_disk_is_reported_as_persistent(client, monkeypatch):
+    """Lokalnie pliki leżą w `data/` i przeżywają restart — flaga ma to potwierdzać.
+
+    Katalog testowy siedzi w `/tmp`, czyli tam, gdzie zapis jest ulotny, więc na czas
+    testu przesuwamy granicę tymczasowości zamiast pisać po prawdziwym dysku.
+    """
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/nie-ma-takiego-katalogu")
     assert client.get("/api/datasets").json()["persistent"] is True
+
+
+def test_a_library_in_the_temp_directory_is_reported_as_temporary(client):
+    """Katalog testowy leży w `/tmp` — dokładnie tam, gdzie ląduje zapis na Vercelu.
+    Nie wolno obiecywać trwałego archiwum tylko dlatego, że sam zapis się udaje."""
+    assert client.get("/api/datasets").json()["persistent"] is False
 
 
 def test_serverless_storage_is_flagged_as_temporary(monkeypatch, tmp_path):

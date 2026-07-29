@@ -182,6 +182,7 @@ function wireEvents() {
   });
   $('library-body').addEventListener('click', handleLibraryAction);
   $('btn-library-refresh').addEventListener('click', refreshLibrary);
+  $('btn-storage-probe').addEventListener('click', probeStorage);
   $('btn-compare').addEventListener('click', runCompare);
   $('btn-compare-close').addEventListener('click', () => {
     state.compare = null;
@@ -1002,23 +1003,29 @@ async function refreshLibrary() {
     return;                       // biblioteka jest dodatkiem, jej awaria nie może psuć reszty
   }
   state.library = data.datasets || [];
-  $('library-card').hidden = state.library.length === 0;
-
   const usage = data.usage || {};
+  // Panel pokazujemy też przy pustej bibliotece, jeśli magazyn jest ulotny — to właśnie
+  // wtedy ostrzeżenie ma sens, bo pustka bywa skutkiem uśpienia, a nie braku pobrań.
+  $('library-card').hidden = state.library.length === 0 && data.persistent !== false;
+
+  const gdzie = usage.backend ? ` · magazyn: ${usage.backend}` : '';   // trafia do textContent
   $('library-sub').textContent = state.library.length
     ? `${state.library.length} ${state.library.length === 1 ? 'zbiór' : 'zbiorów'} · `
-      + `${formatBytes(usage.bytes || 0)} · kliknij „Wczytaj”, żeby wrócić do danych bez pobierania`
-    : '';
+      + `${formatBytes(usage.bytes || 0)}${gdzie} · kliknij „Wczytaj”, żeby wrócić do danych bez pobierania`
+    : `Biblioteka jest pusta${gdzie}.`;
 
   const warning = $('library-warning');
   warning.hidden = data.persistent !== false;
   if (!warning.hidden) {
-    warning.textContent = 'Ta instancja działa bezserwerowo, więc zapisane zbiory żyją tylko '
-      + 'do czasu uśpienia serwera — traktuj tę listę jako wygodę w obrębie sesji, nie archiwum. '
-      + 'Trwałą kopię pobierzesz przyciskiem „Pobierz CSV”.';
+    warning.textContent = 'Zapisane zbiory trafiają na dysk instancji, a przy wdrożeniu '
+      + 'bezserwerowym znika on razem z uśpieniem serwera — traktuj tę listę jako wygodę '
+      + 'w obrębie sesji, nie archiwum. Trwałą kopię pobierzesz przyciskiem „Pobierz CSV”, '
+      + 'a stałe archiwum włączysz, podpinając magazyn Vercel Blob (instrukcja w DEPLOY.md).';
     warning.classList.add('hint-limit');
   }
 
+  // Same nagłówki nad pustką tylko myliłyby — przy pustej bibliotece zostaje sam komunikat.
+  $('library-table').hidden = state.library.length === 0;
   $('library-body').innerHTML = state.library.map((e) => {
     const biezacy = e.id === state.datasetId;
     const okres = e.first_date && e.last_date ? `${e.first_date} → ${e.last_date}` : '—';
@@ -1038,6 +1045,24 @@ async function refreshLibrary() {
       </td>
     </tr>`;
   }).join('');
+}
+
+async function probeStorage() {
+  const out = $('storage-probe-result');
+  out.hidden = false;
+  out.classList.remove('hint-limit');
+  out.textContent = 'Sprawdzam…';
+
+  await withBusy('btn-storage-probe', 'Sprawdzam trwałość zapisu…', async () => {
+    const r = await callApi('api/storage/probe', undefined, { allowRecovery: false });
+    const kroki = (r.steps || [])
+      .map((k) => `${k.ok ? '✓' : '✗'} ${k.krok}${k.szczegol ? ` (${k.szczegol})` : ''}`)
+      .join(' · ');
+    out.textContent = `${r.backend || 'magazyn'}: ${kroki || 'brak kroków'}. ${r.hint || ''}`.trim();
+    // Zapis może działać i mimo to nie przetrwać — o kolorze decyduje trwałość, nie sam cykl.
+    out.classList.toggle('hint-limit', !(r.ok && r.persistent));
+  });
+  refreshLibrary();
 }
 
 async function handleLibraryAction(event) {

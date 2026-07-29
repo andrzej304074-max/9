@@ -339,9 +339,13 @@
           <h2>Zapisane dane</h2>
           <p class="card-sub" id="library-sub"></p>
         </div>
-        <button type="button" class="btn btn-ghost btn-small" id="btn-library-refresh">Odśwież</button>
+        <div class="card-tools">
+          <button type="button" class="btn btn-ghost btn-small" id="btn-storage-probe">Sprawdź magazyn</button>
+          <button type="button" class="btn btn-ghost btn-small" id="btn-library-refresh">Odśwież</button>
+        </div>
       </div>
       <p class="hint" id="library-warning" hidden></p>
+      <p class="hint" id="storage-probe-result" hidden></p>
       <div class="table-scroll">
         <table class="data-table" id="library-table">
           <thead>
