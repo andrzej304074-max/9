@@ -6,6 +6,8 @@ venv/
 
 # pliki wgrane przez użytkownika w trakcie pracy z aplikacją
 data/uploads/
+# biblioteka wczytanych zbiorów danych — prywatne dane użytkownika, nie kod
+data/datasets/
 # pamięć podręczna pobrań z Dukascopy (jeden plik na godzinę handlu)
 data/dukascopy_cache/
 
