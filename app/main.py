@@ -24,6 +24,7 @@ from .dukascopy import (
     DEFAULT_INSTRUMENT,
     download_bars,
     download_window,
+    inspect_candles,
     instruments_payload,
     probe as probe_dukascopy,
 )
@@ -425,6 +426,12 @@ def dukascopy_probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, Any]:
     Odpowiada na najtrudniejsze do zdiagnozowania zgłoszenie: „klikam i nic się nie dzieje".
     """
     return probe_dukascopy(instrument)
+
+
+@app.get("/api/dukascopy/inspect")
+def dukascopy_inspect(instrument: str = DEFAULT_INSTRUMENT, price: str = "bid") -> dict[str, Any]:
+    """Surowy podgląd pliku ze świecami — do rozpoznania nieudokumentowanego formatu."""
+    return inspect_candles(instrument, price=price)
 
 
 @app.get("/api/dukascopy/status/{job_id}")

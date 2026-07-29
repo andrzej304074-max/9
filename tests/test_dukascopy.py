@@ -817,7 +817,9 @@ def test_verification_rejects_candles_that_disagree(monkeypatch):
 
     verdict = duka.verify_candles("GBPUSD")
     assert not verdict.usable
-    assert "nie zgadzają" in verdict.reason
+    assert verdict.layout is None
+    assert "zgodnych z tickami" in verdict.reason
+    assert verdict.checked >= 8          # sprawdzono cały wachlarz układów, nie jeden
 
 
 def test_missing_candle_files_fall_back_to_ticks(monkeypatch):
@@ -870,3 +872,73 @@ def test_candles_can_be_switched_off(tmp_path, monkeypatch):
     wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 2),
                                  cache_dir=tmp_path, use_candles=False)
     assert wynik.source == "ticks"
+
+
+def test_verification_finds_the_layout_whatever_it_is(monkeypatch):
+    """Nie zgadujemy jednego układu — przeszukujemy wachlarz i wybieramy ten,
+    który zgadza się z tickami. Tu plik jest zapisany 'na odwrót' względem domyślnego."""
+    import app.dukascopy as duka
+    from app.dukascopy import CANDLE_STRUCT
+
+    minutes = [(m, 1.2630 + m / 10000, 1.2640 + m / 10000, 1.2620 + m / 10000, 1.2635 + m / 10000)
+               for m in range(30)]
+    ticks = []
+    for m, o, h, l, c in minutes:
+        base = (10 * 60 + m) * 60_000
+        ticks += [(base, round(o * 1e5), round(o * 1e5)),
+                  (base + 10_000, round(h * 1e5), round(h * 1e5)),
+                  (base + 20_000, round(l * 1e5), round(l * 1e5)),
+                  (base + 50_000, round(c * 1e5), round(c * 1e5))]
+    tick_payload = make_bi5([(t - 10 * 3_600_000, a, b) for t, a, b in ticks])
+
+    # kolejność OHLC (nie OCLH), ceny wprost, czas w milisekundach
+    raw = b"".join(
+        CANDLE_STRUCT.pack((10 * 60 + m) * 60 * 1000, o, h, l, c, 1.0)
+        for m, o, h, l, c in minutes
+    )
+    comp = lzma.LZMACompressor(format=lzma.FORMAT_ALONE)
+    candle_payload = comp.compress(raw) + comp.flush()
+
+    monkeypatch.setattr(duka, "_fetch_hour",
+                        lambda url: candle_payload if "candles" in url else tick_payload)
+
+    verdict = duka.verify_candles("GBPUSD")
+    assert verdict.usable
+    assert verdict.layout.order == "ohlc"
+    assert verdict.layout.scaled is False
+    assert verdict.layout.time_divisor == 1000
+
+
+def test_every_layout_variant_is_reachable():
+    """Wachlarz ma pokrywać obie kolejności cen, oba zapisy ceny i obie jednostki czasu."""
+    from app.dukascopy import candle_layouts
+
+    layouts = candle_layouts()
+    assert len({l.order for l in layouts}) == 2
+    assert len({l.scaled for l in layouts}) == 2
+    assert len({l.time_divisor for l in layouts}) == 2
+    assert len(layouts) == len(set(layouts))      # bez duplikatów
+
+
+def test_inspector_reports_raw_bytes_and_readings(monkeypatch):
+    """Gdy nic nie pasuje, inspektor ma pokazać surowe bajty do ręcznego rozpoznania."""
+    import app.dukascopy as duka
+
+    payload = make_candles([(600, 1.2630, 1.2640, 1.2625, 1.2635)])
+    monkeypatch.setattr(duka, "_fetch_hour",
+                        lambda url: payload if "candles" in url else make_bi5([(0, 126_350, 126_340)]))
+
+    raport = duka.inspect_candles("GBPUSD")
+    assert raport["compressed_bytes"] > 0
+    assert raport["raw_bytes"] == 24
+    assert 24 in raport["dzieli_sie_bez_reszty_przez"]
+    assert len(raport["pierwsze_48_bajtow_hex"]) > 0
+    assert raport["odczyty_pierwszych_3_rekordow"] == {} or isinstance(
+        raport["odczyty_pierwszych_3_rekordow"], dict)
+
+
+def test_inspector_survives_a_missing_file(monkeypatch):
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: b"")
+    assert "404" in duka.inspect_candles("GBPUSD")["error"]

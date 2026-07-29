@@ -104,6 +104,41 @@ CANDLE_STRUCT = struct.Struct(">i5f")   # 24 B: przesunięcie w sekundach, O, C,
 CANDLE_TOLERANCE = 1e-6                 # świece z obu źródeł muszą się zgadzać co do piątego miejsca
 
 
+@dataclass(frozen=True)
+class CandleLayout:
+    """Jeden możliwy sposób odczytania rekordu świecy.
+
+    Nie wiemy z góry, w jakiej kolejności zapisane są ceny, czy są liczbami w punktach
+    czy gotowymi wartościami i w jakiej jednostce jest znacznik czasu. Zamiast obstawiać,
+    wyliczamy wszystkie rozsądne warianty i sprawdzamy je względem ticków, które są pewne.
+    """
+
+    fmt: str            # układ pól rekordu
+    order: str          # 'oclh' albo 'ohlc' — kolejność cen po znaczniku czasu
+    scaled: bool        # czy dzielić przez skalę instrumentu
+    time_divisor: int   # 1 dla sekund, 1000 dla milisekund
+
+    @property
+    def struct(self) -> struct.Struct:
+        return struct.Struct(self.fmt)
+
+    def label(self) -> str:
+        jednostka = "s" if self.time_divisor == 1 else "ms"
+        return f"{self.fmt} {self.order} {'w punktach' if self.scaled else 'wprost'} czas w {jednostka}"
+
+
+def candle_layouts() -> list[CandleLayout]:
+    """Wszystkie warianty warte sprawdzenia — 24-bajtowy rekord, dwie kolejności cen,
+    dwa sposoby zapisu ceny, dwie jednostki czasu."""
+    return [
+        CandleLayout(fmt, order, scaled, divisor)
+        for fmt in (">i5f", ">5if")          # czas + 5 zmiennoprzecinkowych albo 5 całkowitych + wolumen
+        for order in ("oclh", "ohlc")
+        for scaled in (True, False)
+        for divisor in (1, 1000)
+    ]
+
+
 def day_candles_url(instrument: str, day: date, price: str = "bid") -> str:
     """Adres pliku z minutowymi świecami całej doby. Miesiąc, jak zwykle, liczony od zera."""
     side = "ASK" if price == "ask" else "BID"
@@ -114,29 +149,32 @@ def day_candles_url(instrument: str, day: date, price: str = "bid") -> str:
 
 
 def decode_candles(
-    payload: bytes, day_start: datetime, scale: float, scaled: bool = True
+    payload: bytes, day_start: datetime, scale: float, layout: Optional[CandleLayout] = None
 ) -> list[Bar]:
-    """Rozkodowuje plik ze świecami minutowymi.
-
-    `scaled` mówi, czy ceny są zapisane jako liczby w punktach (jak w plikach tickowych),
-    czy już jako gotowe wartości. Rozstrzyga to weryfikacja, a nie założenie.
-    """
+    """Rozkodowuje plik ze świecami minutowymi według zadanego układu pól."""
+    layout = layout or CandleLayout(">i5f", "oclh", True, 1)
     raw = _decompress(payload)
     if not raw:
         return []
 
-    divisor = scale if scaled else 1.0
+    st = layout.struct
+    divisor = scale if layout.scaled else 1.0
     base = day_start.timestamp()
-    usable = len(raw) - (len(raw) % CANDLE_STRUCT.size)
+    usable = len(raw) - (len(raw) % st.size)
     bars: list[Bar] = []
 
-    for offset_s, o, c, l, h, _vol in CANDLE_STRUCT.iter_unpack(raw[:usable]):
-        if o <= 0 or h <= 0 or l <= 0 or c <= 0:
+    for record in st.iter_unpack(raw[:usable]):
+        stamp, a, b, c, d = record[0], record[1], record[2], record[3], record[4]
+        if layout.order == "oclh":
+            o, close, low, high = a, b, c, d
+        else:
+            o, high, low, close = a, b, c, d
+        if o <= 0 or high <= 0 or low <= 0 or close <= 0:
             continue    # minuta bez handlu bywa zapisana zerami
         bars.append(
             Bar(
-                ts=datetime.fromtimestamp(base + offset_s, tz=timezone.utc),
-                open=o / divisor, high=h / divisor, low=l / divisor, close=c / divisor,
+                ts=datetime.fromtimestamp(base + stamp / layout.time_divisor, tz=timezone.utc),
+                open=o / divisor, high=high / divisor, low=low / divisor, close=close / divisor,
                 volume=0.0,
             )
         )
@@ -466,9 +504,14 @@ class CandleSupport:
     """Werdykt, czy dla danego instrumentu wolno użyć gotowych świec zamiast ticków."""
 
     usable: bool = False
-    scaled: bool = True          # czy ceny w pliku są liczbami w punktach
+    layout: Optional[CandleLayout] = None
     reason: str = ""
     compared: int = 0            # ile minut udało się porównać z tickami
+    checked: int = 0             # ile wariantów formatu sprawdzono
+
+    @property
+    def scaled(self) -> bool:
+        return self.layout.scaled if self.layout else True
 
 
 def verify_candles(
@@ -501,11 +544,18 @@ def verify_candles(
     if not wanted:
         return CandleSupport(reason="Godzina odniesienia nie zawiera ticków.")
 
-    for scaled in (True, False):
-        bars = decode_candles(payload, datetime(day.year, day.month, day.day, tzinfo=timezone.utc),
-                              scale, scaled=scaled)
+    day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    layouts = candle_layouts()
+    sane_but_wrong = 0
+
+    for layout in layouts:
+        try:
+            bars = decode_candles(payload, day_start, scale, layout)
+        except (struct.error, ValueError, OverflowError, OSError):
+            continue          # ten układ w ogóle nie pasuje do zawartości pliku
         if not candles_look_sane(bars):
             continue
+        sane_but_wrong += 1
 
         matched = 0
         for bar in bars:
@@ -521,9 +571,90 @@ def verify_candles(
             matched += 1
 
         if matched >= 10:      # kilkanaście zgodnych minut wystarczy, żeby wykluczyć przypadek
-            return CandleSupport(True, scaled, "Świece zgadzają się z tickami.", matched)
+            return CandleSupport(
+                True, layout, f"Świece zgadzają się z tickami (układ {layout.label()}).",
+                matched, len(layouts),
+            )
 
-    return CandleSupport(reason="Świece nie zgadzają się z tickami — zostajemy przy tickach.")
+    if sane_but_wrong:
+        powod = (f"Żaden z {len(layouts)} sprawdzonych układów nie dał świec zgodnych z tickami "
+                 f"(struktura pasowała w {sane_but_wrong} wariantach, ale ceny się rozjeżdżają).")
+    else:
+        powod = (f"Plik istnieje, ale żaden z {len(layouts)} sprawdzonych układów nie daje "
+                 "poprawnych świec — format jest inny, niż zakładamy.")
+    return CandleSupport(reason=powod + " Pobieranie idzie z ticków.", checked=len(layouts))
+
+
+def inspect_candles(
+    instrument: str = DEFAULT_INSTRUMENT,
+    day: Optional[date] = None,
+    price: str = "bid",
+) -> dict[str, object]:
+    """Rozkłada plik ze świecami na czynniki pierwsze i pokazuje surowe liczby.
+
+    Format tych plików nie jest udokumentowany. Zamiast zgadywać w nieskończoność,
+    pobieramy jeden plik i wypisujemy: ile waży, na ile bajtów dzieli się jego zawartość
+    i jak wyglądają pierwsze rekordy odczytane na kilka sposobów — obok wartości
+    wyliczonych z ticków, które są pewne. Zestawienie jednego z drugim wystarcza,
+    żeby rozpoznać właściwy układ pól.
+    """
+    day = day or date(2024, 1, 2)
+    scale = instrument_scale(instrument)
+    url = day_candles_url(instrument, day, price)
+
+    payload = _fetch_hour(url)
+    if payload is None:
+        return {"url": url, "error": "Nie udało się pobrać pliku (błąd połączenia)."}
+    if not payload:
+        return {"url": url, "error": "Archiwum nie ma pliku pod tym adresem (404)."}
+
+    try:
+        raw = _decompress(payload)
+    except DataError as exc:
+        return {"url": url, "compressed_bytes": len(payload), "error": str(exc)}
+
+    out: dict[str, object] = {
+        "url": url,
+        "compressed_bytes": len(payload),
+        "raw_bytes": len(raw),
+        "dzieli_sie_bez_reszty_przez": [n for n in (12, 16, 20, 24, 28, 32, 40) if len(raw) % n == 0],
+        "pierwsze_48_bajtow_hex": raw[:48].hex(),
+    }
+
+    # Kilka prawdopodobnych układów 24-bajtowego rekordu.
+    layouts = {
+        ">i5f": "int32 + 5x float32",
+        ">6i": "6x int32",
+        ">2i4f": "2x int32 + 4x float32",
+        ">i4fi": "int32 + 4x float32 + int32",
+        ">5if": "5x int32 + float32",
+        ">q4f": "int64 + 4x float32",
+    }
+    odczyty: dict[str, object] = {}
+    for fmt, opis in layouts.items():
+        st = struct.Struct(fmt)
+        if len(raw) < st.size * 3:
+            continue
+        try:
+            odczyty[f"{fmt} ({opis})"] = [list(st.unpack_from(raw, i * st.size)) for i in range(3)]
+        except struct.error:
+            continue
+    out["odczyty_pierwszych_3_rekordow"] = odczyty
+
+    # Wartości pewne — z ticków tej samej doby, do porównania z powyższymi.
+    hour = datetime(day.year, day.month, day.day, 10, tzinfo=timezone.utc)
+    tick_payload = _fetch_hour(hour_url(instrument, hour))
+    if tick_payload:
+        reference = BarBuilder(1, price)
+        reference.feed_bi5(tick_payload, hour, scale)
+        bars = reference.bars()[:3]
+        out["swiece_z_tickow_10_00"] = [
+            {"czas": b.ts.isoformat(), "o": round(b.open, 5), "h": round(b.high, 5),
+             "l": round(b.low, 5), "c": round(b.close, 5)}
+            for b in bars
+        ]
+        out["skala_instrumentu"] = scale
+    return out
 
 
 @dataclass
@@ -613,7 +744,7 @@ def download_window(
                 return None
 
         start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-        return decode_candles(payload, start, scale, scaled=support.scaled)
+        return decode_candles(payload, start, scale, support.layout)
 
     def load(when: datetime) -> Optional[tuple[datetime, bytes]]:
         """Zwraca surową zawartość pliku albo None, gdy godziny nie udało się pobrać.
