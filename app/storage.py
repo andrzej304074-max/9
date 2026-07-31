@@ -56,7 +56,12 @@ class LocalStorage:
 
     def __init__(self, root: Optional[Path] = None) -> None:
         self._root = root or (state_dir() / "datasets")
-        self._root.mkdir(parents=True, exist_ok=True)
+        try:
+            self._root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Biblioteka to wygoda, nie warunek działania — brak katalogu ma odbierać zapis,
+            # a nie przewracać aplikację przy pierwszym żądaniu.
+            pass
 
     @property
     def persistent(self) -> bool:

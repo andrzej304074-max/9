@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import sys
 import threading
 import time
 import uuid
@@ -652,5 +653,55 @@ async def _cache_static(request, call_next):
     return response
 
 
+@app.get("/api/diagnostics")
+def diagnostics() -> dict[str, Any]:
+    """Czy wdrożenie ma wszystko, czego potrzebuje, żeby w ogóle pokazać stronę.
+
+    Powstało po zgłoszeniu „zamiast aplikacji widzę surowy tekst". Przyczyną bywa brak
+    plików frontu w paczce funkcji — a to widać dopiero po zajrzeniu na serwer, nie w kodzie.
+    Jedno żądanie odpowiada więc na pytanie, czego brakuje.
+    """
+    pliki = sorted(p.name for p in WEB_DIR.iterdir()) if WEB_DIR.is_dir() else []
+    return {
+        "web_dir": str(WEB_DIR),
+        "web_dir_present": WEB_DIR.is_dir(),
+        "web_files": pliki,
+        "frontend_ready": {"index.html", "style.css", "app.js"} <= set(pliki),
+        "sample_present": SAMPLE_FILE.exists(),
+        "python": sys.version.split()[0],
+        "runtime": describe_runtime(),
+        "storage": library.usage(),
+    }
+
+
 if WEB_DIR.exists():
     app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+else:
+    # Bez tego brak plików frontu kończy się gołym `{"detail":"Not Found"}` — komunikatem,
+    # który niczego nie tłumaczy i wygląda jak awaria całej aplikacji. Sama aplikacja działa;
+    # nie dojechały do niej pliki strony, i to trzeba powiedzieć wprost.
+    @app.get("/", include_in_schema=False)
+    def _brak_frontendu() -> Response:
+        return Response(status_code=503, media_type="text/html; charset=utf-8", content=f"""
+<!doctype html><html lang="pl"><meta charset="utf-8">
+<title>Backtester — brak plików strony</title>
+<style>
+ body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 3rem auto; padding: 0 1.5rem; }}
+ code {{ background: #f1f1f4; padding: 1px 5px; border-radius: 4px; }}
+ pre {{ background: #f1f1f4; padding: 12px; border-radius: 8px; overflow-x: auto; }}
+</style>
+<h1>Serwer działa, ale nie ma plików strony</h1>
+<p>API odpowiada poprawnie — brakuje samego interfejsu. Szukam go w katalogu
+   <code>{WEB_DIR}</code>, a tam nic nie ma.</p>
+<p>Na Vercelu to prawie zawsze jedna przyczyna: runtime Pythona pakuje do funkcji tylko to,
+   co wyśledzi po importach, a <code>web/index.html</code>, <code>web/style.css</code>
+   i <code>web/app.js</code> nie są modułami Pythona. Trzeba je dołożyć jawnie
+   w <code>vercel.json</code>:</p>
+<pre>"functions": {{
+  "api/index.py": {{
+    "includeFiles": "{{web,data,app}}/**"
+  }}
+}}</pre>
+<p>Po poprawce zrób ponowne wdrożenie. Szczegóły stanu:
+   <a href="/api/diagnostics">/api/diagnostics</a>.</p>
+</html>""")

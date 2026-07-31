@@ -47,7 +47,9 @@ ponownie po każdym uśpieniu serwera. Podpięcie zajmuje dwie minuty i jest opi
 5. Kliknij **Deploy** i poczekaj około minuty.
 
 Dostaniesz adres w rodzaju `https://twoj-projekt.vercel.app`. Otwórz go, kliknij **Dane demo**
-i sprawdź, czy backtest się liczy.
+i sprawdź, czy backtest się liczy. Gdyby zamiast aplikacji pojawił się surowy tekst, zajrzyj
+do sekcji [Rozwiązywanie problemów](#rozwiązywanie-problemów) — pierwszy punkt opisuje właśnie
+ten przypadek.
 
 ---
 
@@ -72,7 +74,7 @@ Przy pierwszym uruchomieniu Vercel zapyta o kilka rzeczy — na wszystkie odpowi
 | Plik | Rola |
 |---|---|
 | `api/index.py` | Punkt wejścia funkcji. Vercel szuka w nim zmiennej `app` i traktuje ją jako aplikację ASGI. |
-| `vercel.json` | Kieruje wszystkie ścieżki do funkcji, ustawia 1 GB pamięci i limit 60 s na żądanie. |
+| `vercel.json` | Kieruje wszystkie ścieżki do funkcji, ustawia 1 GB pamięci i limit 60 s na żądanie. `includeFiles` dokłada do paczki pliki, których runtime nie wyśledzi po importach — czyli cały front. |
 | `requirements.txt` | Zależności instalowane w chmurze — tylko `fastapi` i `python-multipart`. |
 | `requirements-dev.txt` | To samo plus `uvicorn` i `pytest`, do pracy lokalnej. |
 | `.vercelignore` | Trzyma testy, narzędzia i pamięć podręczną poza wdrożeniem. |
@@ -211,6 +213,26 @@ oczekiwanie, bez komunikatu o błędzie.
 ---
 
 ## Rozwiązywanie problemów
+
+**Zamiast aplikacji widzę surowy tekst — coś w rodzaju `{"detail":"Not Found"}`.** Do funkcji
+nie dojechały pliki strony. Runtime Pythona na Vercelu pakuje tylko to, co wyśledzi po
+importach, a `web/index.html`, `web/style.css` i `web/app.js` modułami Pythona nie są —
+trzeba je dołożyć jawnie. Robi to `includeFiles` w `vercel.json`:
+
+```json
+"functions": {
+  "api/index.py": {
+    "memory": 1024,
+    "maxDuration": 60,
+    "includeFiles": "{web,data,app}/**"
+  }
+}
+```
+
+Jeżeli to już masz, a problem zostaje, otwórz `https://twoj-projekt.vercel.app/api/diagnostics` —
+powie wprost, czy katalog `web/` dojechał i jakie pliki w nim widzi. Od tej poprawki taka
+sytuacja tłumaczy się zresztą sama: pod adresem głównym pojawia się strona z wyjaśnieniem
+zamiast gołego 404.
 
 **Strona pokazuje 404 zamiast aplikacji.** Sprawdź, czy `vercel.json` trafił do repozytorium
 i czy w ustawieniach projektu *Output Directory* jest puste.

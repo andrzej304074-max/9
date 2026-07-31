@@ -15,12 +15,21 @@ nie musiała pytać o środowisko.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Vercel ustawia VERCEL=1, a pod spodem i tak działa Lambda — sprawdzamy oba tropy.
-IS_SERVERLESS = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+# Vercel ustawia VERCEL i VERCEL_ENV, a pod spodem i tak działa Lambda ze swoimi zmiennymi.
+# Sprawdzamy wszystkie tropy: pomyłka w tę stronę oznacza próbę zapisu do katalogu tylko
+# do odczytu, czyli wywrotkę przy starcie funkcji.
+IS_SERVERLESS = bool(
+    os.environ.get("VERCEL")
+    or os.environ.get("VERCEL_ENV")
+    or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    or os.environ.get("LAMBDA_TASK_ROOT")
+)
 
 # Budżet czasu pojedynczego żądania. Na Vercelu to `maxDuration` z vercel.json:
 # plan Hobby dopuszcza do 60 s, Pro znacznie więcej. Wartość można nadpisać zmienną
@@ -34,16 +43,51 @@ MAX_UPLOAD_BYTES = int(
 )
 
 
+_WYBRANY: Optional[tuple[str, Path]] = None     # (żądanie ze środowiska, katalog, który zadziałał)
+
+
+def _zapisywalny(katalog: Path) -> bool:
+    """Czy do tego katalogu da się naprawdę zapisać.
+
+    Samo istnienie nie wystarcza: przy wdrożeniu bezserwerowym katalog projektu istnieje,
+    ale cały system plików poza tymczasowym jest tylko do odczytu.
+    """
+    try:
+        katalog.mkdir(parents=True, exist_ok=True)
+        proba = katalog / ".proba-zapisu"
+        proba.write_text("", encoding="utf-8")
+        proba.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def state_dir() -> Path:
     """Katalog na dane zapisywane w trakcie pracy.
 
     Na Vercelu jedyne miejsce z prawem zapisu to `/tmp` — jest ulotne i lokalne dla
     instancji, ale wystarcza jako pamięć podręczna między kolejnymi żądaniami tej samej
     instancji, a to obsługuje większość ruchu.
+
+    Wybór musi być odporny na pomyłkę w rozpoznaniu środowiska. Ten moduł wczytuje się przy
+    starcie funkcji, więc wyjątek z `mkdir` położyłby całą aplikację, zanim zdążyłaby
+    powiedzieć, co się stało — zamiast strony użytkownik dostałby surowy błąd platformy.
+    Dlatego sprawdzamy kandydatów po kolei i bierzemy pierwszego, w którym zapis faktycznie
+    działa. Wynik zapamiętujemy, ale wiążemy go z ustawieniem, z którego wynika.
     """
-    root = Path(os.environ.get("BACKTESTER_STATE_DIR", "/tmp/backtester" if IS_SERVERLESS else str(BASE_DIR / "data")))
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    global _WYBRANY
+    zadany = os.environ.get("BACKTESTER_STATE_DIR", "")
+    if _WYBRANY is not None and _WYBRANY[0] == zadany:
+        return _WYBRANY[1]
+
+    kandydaci = [Path(zadany)] if zadany else []
+    if not IS_SERVERLESS:
+        kandydaci.append(BASE_DIR / "data")
+    kandydaci.append(Path(tempfile.gettempdir()) / "backtester")
+
+    wybrany = next((k for k in kandydaci if _zapisywalny(k)), kandydaci[-1])
+    _WYBRANY = (zadany, wybrany)
+    return wybrany
 
 
 def describe() -> dict[str, object]:

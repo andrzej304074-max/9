@@ -502,6 +502,7 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/dukascopy/chunk` | Pobiera tyle dni, ile zmieści się w limicie czasu, i zwraca surowy CSV razem z ostatnim domkniętym dniem. Klient wznawia od następnego. |
 | `GET /api/dukascopy/probe` | Pobiera jeden testowy plik godzinowy i opisuje wynik — diagnostyka na wypadek, gdy pobieranie nie rusza. |
 | `GET /api/storage/probe` | Pełny cykl zapis → odczyt → porównanie → usunięcie. Rozstrzyga, czy biblioteka przeżyje uśpienie instancji. |
+| `GET /api/diagnostics` | Czy wdrożenie ma wszystko, czego potrzebuje: pliki frontu, dane demo, magazyn, wersję Pythona. |
 | `GET /api/archive/estimate` | Ile plików, danych i czasu zajmie masowe pobranie — bez pobierania czegokolwiek. |
 | `POST /api/archive/start` | `{"instruments": ["GBPUSD"], "years": 10, "interval_minutes": 15, "price": "bid"}` → zakłada plan pobierania. |
 | `POST /api/archive/step` | Wykonuje tyle pracy, ile mieści się w limicie czasu, i oddaje postęp. Wołane w pętli aż plan przestanie być `running`. |
