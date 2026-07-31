@@ -74,7 +74,15 @@ Przy pierwszym uruchomieniu Vercel zapyta o kilka rzeczy — na wszystkie odpowi
 | Plik | Rola |
 |---|---|
 | `api/index.py` | Punkt wejścia funkcji. Vercel szuka w nim zmiennej `app` i traktuje ją jako aplikację ASGI. |
-| `vercel.json` | Kieruje wszystkie ścieżki do funkcji, ustawia 1 GB pamięci i limit 60 s na żądanie. `includeFiles` dokłada do paczki pliki, których runtime nie wyśledzi po importach — czyli cały front. |
+| `vercel.json` | `outputDirectory` wskazuje `web/` jako statyczną stronę, a `rewrites` kieruje do funkcji wyłącznie `/api/*`. `includeFiles` dokłada do paczki funkcji pliki, których runtime nie wyśledzi po importach. |
+
+### Dlaczego strona idzie osobno od API
+
+Front (`web/`) jest serwowany jako **statyka z CDN-u**, a funkcja Pythona obsługuje tylko
+ścieżki `/api/*`. To nie jest kosmetyka: gdyby wszystko szło przez funkcję, dowolny jej
+problem — brakujący plik w paczce, wyjątek przy starcie — kończyłby się nie stroną z błędem,
+tylko surowym tekstem zamiast aplikacji. Przy tym podziale strona wstaje niezależnie od
+Pythona, a ewentualny problem z API widać jako komunikat w interfejsie.
 | `requirements.txt` | Zależności instalowane w chmurze — tylko `fastapi` i `python-multipart`. |
 | `requirements-dev.txt` | To samo plus `uvicorn` i `pytest`, do pracy lokalnej. |
 | `.vercelignore` | Trzyma testy, narzędzia i pamięć podręczną poza wdrożeniem. |
@@ -214,25 +222,26 @@ oczekiwanie, bez komunikatu o błędzie.
 
 ## Rozwiązywanie problemów
 
-**Zamiast aplikacji widzę surowy tekst — coś w rodzaju `{"detail":"Not Found"}`.** Do funkcji
-nie dojechały pliki strony. Runtime Pythona na Vercelu pakuje tylko to, co wyśledzi po
-importach, a `web/index.html`, `web/style.css` i `web/app.js` modułami Pythona nie są —
-trzeba je dołożyć jawnie. Robi to `includeFiles` w `vercel.json`:
+**Zamiast aplikacji widzę surowy tekst — `{"detail":"Not Found"}` albo stronę błędu Vercela.**
 
-```json
-"functions": {
-  "api/index.py": {
-    "memory": 1024,
-    "maxDuration": 60,
-    "includeFiles": "{web,data,app}/**"
-  }
-}
-```
+Zacznij od rozstrzygnięcia, **czy w ogóle działa nowy kod**. Otwórz
+`https://twoj-projekt.vercel.app/api/diagnostics`:
 
-Jeżeli to już masz, a problem zostaje, otwórz `https://twoj-projekt.vercel.app/api/diagnostics` —
-powie wprost, czy katalog `web/` dojechał i jakie pliki w nim widzi. Od tej poprawki taka
-sytuacja tłumaczy się zresztą sama: pod adresem głównym pojawia się strona z wyjaśnieniem
-zamiast gołego 404.
+* **Widzisz JSON z polami `web_dir_present`, `frontend_ready`** → nowy kod jest wdrożony.
+  Te pola mówią, czego brakuje.
+* **Widzisz `404: NOT_FOUND` albo stronę błędu Vercela** → wdrożony jest **stary kod**.
+  To najczęstsza przyczyna „poprawka nic nie zmieniła" i osobny problem, opisany niżej.
+
+**Uwaga na przycisk „Redeploy": on wdraża ten sam commit co poprzednio.** Do zmian w kodzie
+służy nowe wdrożenie z najnowszego commitu. Sprawdź w zakładce **Deployments**, czy najnowsze
+wdrożenie ma opis Twojego ostatniego commitu i datę po jego wypchnięciu. Jeżeli nie:
+
+1. **Settings → Git** — czy projekt jest w ogóle połączony z repozytorium. Bez tego wypchnięcie
+   na GitHuba niczego nie uruchamia i każde wdrożenie trzeba robić ręcznie (`vercel --prod`).
+2. **Settings → Git → Production Branch** — czy zgadza się z gałęzią, na której jest kod.
+   Domyślnie Vercel bierze gałąź główną repozytorium.
+3. Gdy projekt jest połączony, a wdrożenie nie ruszyło — zrób **Redeploy na najnowszym
+   wdrożeniu** i odznacz *Use existing Build Cache*.
 
 **Strona pokazuje 404 zamiast aplikacji.** Sprawdź, czy `vercel.json` trafił do repozytorium
 i czy w ustawieniach projektu *Output Directory* jest puste.

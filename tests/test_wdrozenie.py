@@ -53,11 +53,35 @@ def sprzataj():
 # --- konfiguracja wdrożenia ----------------------------------------------------------
 
 
-def test_the_deployment_config_ships_the_frontend_files():
-    """Sedno błędu: bez `includeFiles` Vercel nie pakuje plików, które nie są importami."""
-    config = json.loads((REPO / "vercel.json").read_text(encoding="utf-8"))
-    wzorzec = config["functions"]["api/index.py"]["includeFiles"]
-    assert "web" in wzorzec
+@pytest.fixture(scope="module")
+def wdrozenie() -> dict:
+    return json.loads((REPO / "vercel.json").read_text(encoding="utf-8"))
+
+
+def test_the_frontend_is_served_as_static_files(wdrozenie):
+    """Strona nie może zależeć od tego, czy funkcja Pythona wstanie.
+
+    Wcześniej wszystko szło przez funkcję, więc dowolny jej problem — brak pliku w paczce,
+    wyjątek przy imporcie — kończył się nie stroną z błędem, tylko surowym tekstem zamiast
+    aplikacji. Statyka idzie teraz z CDN-u, niezależnie od Pythona.
+    """
+    assert wdrozenie["outputDirectory"] == "web"
+
+
+def test_only_the_api_goes_through_the_function(wdrozenie):
+    assert wdrozenie["rewrites"] == [{"source": "/api/(.*)", "destination": "/api/index"}]
+
+
+def test_the_function_still_carries_the_files_it_needs(wdrozenie):
+    """Runtime Pythona pakuje tylko to, co wyśledzi po importach — reszta musi być jawnie.
+
+    `app/` bywa niewidoczne dla śledzenia, bo import idzie po ręcznym dopisaniu ścieżki,
+    a `data/` z danymi demo nie jest kodem. Front zostaje w paczce jako druga droga do
+    działającej strony, gdyby statyka z jakiegokolwiek powodu nie zadziałała.
+    """
+    wzorzec = wdrozenie["functions"]["api/index.py"]["includeFiles"]
+    for katalog in ("web", "data", "app"):
+        assert katalog in wzorzec, katalog
 
 
 def test_the_frontend_files_are_actually_in_the_repository():
@@ -66,9 +90,18 @@ def test_the_frontend_files_are_actually_in_the_repository():
         assert (REPO / "web" / nazwa).is_file(), nazwa
 
 
-def test_every_request_reaches_the_function():
-    config = json.loads((REPO / "vercel.json").read_text(encoding="utf-8"))
-    assert config["rewrites"] == [{"source": "/(.*)", "destination": "/api/index"}]
+def test_the_entry_point_can_find_the_application_package():
+    """Funkcja startuje z katalogu `api/`, więc korzeń projektu musi trafić na ścieżkę
+    importu — inaczej cold start kończy się `ModuleNotFoundError` i błędem platformy."""
+    zrodlo = (REPO / "api" / "index.py").read_text(encoding="utf-8")
+    assert "sys.path.insert" in zrodlo
+    assert zrodlo.index("sys.path.insert") < zrodlo.index("from app.main import app")
+
+
+def test_the_frontend_asks_for_the_api_relative_to_the_page():
+    """Adresy bezwzględne rozjechałyby się przy serwowaniu strony z CDN-u."""
+    zrodlo = (REPO / "web" / "app.js").read_text(encoding="utf-8")
+    assert "'/api/" not in zrodlo and '"/api/' not in zrodlo
 
 
 # --- brak plików frontu --------------------------------------------------------------
