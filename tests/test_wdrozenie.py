@@ -69,7 +69,21 @@ def test_the_frontend_is_served_as_static_files(wdrozenie):
 
 
 def test_only_the_api_goes_through_the_function(wdrozenie):
-    assert wdrozenie["rewrites"] == [{"source": "/api/(.*)", "destination": "/api/index"}]
+    [regula] = wdrozenie["rewrites"]
+    assert regula["source"] == "/api/(.*)"
+    assert regula["destination"].startswith("/api/index")
+
+
+def test_the_rewrite_carries_the_original_path(wdrozenie):
+    """Sedno awarii: `rewrites` podmienia ścieżkę na docelową.
+
+    Bez doklejenia pierwotnej ścieżki funkcja dostaje zawsze `/api/index`, a takiej trasy
+    aplikacja nie ma — każde wywołanie API kończy się 404, choć serwer działa poprawnie.
+    """
+    from app.main import VERCEL_PATH_PARAM
+
+    [regula] = wdrozenie["rewrites"]
+    assert f"{VERCEL_PATH_PARAM}=$1" in regula["destination"]
 
 
 def test_the_function_still_carries_the_files_it_needs(wdrozenie):
@@ -160,6 +174,66 @@ def test_a_complete_deployment_serves_the_page(monkeypatch, tmp_path):
     assert odp.status_code == 200
     assert "text/html" in odp.headers["content-type"]
     assert "Backtester" in odp.text
+
+
+# --- ścieżka zgubiona przez przekierowanie Vercela --------------------------------------
+
+
+@pytest.fixture
+def klient(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    return TestClient(zaladuj(monkeypatch, tmp_path / "stan").app)
+
+
+def test_a_rewritten_request_reaches_the_endpoint_it_was_meant_for(klient):
+    """Tak wygląda żądanie po przejściu przez przekierowanie Vercela."""
+    przez_vercela = klient.get("/api/index?__sciezka=options")
+    wprost = klient.get("/api/options")
+
+    assert przez_vercela.status_code == 200
+    assert przez_vercela.json() == wprost.json()
+
+
+def test_a_nested_path_survives_the_rewrite(klient):
+    assert klient.get("/api/index?__sciezka=archive/status").json() == klient.get("/api/archive/status").json()
+
+
+def test_the_query_string_survives_the_rewrite(klient, monkeypatch):
+    """Vercel dokleja pierwotne zapytanie do docelowego — parametry muszą przetrwać."""
+    dane = klient.get("/api/index?__sciezka=archive/estimate&instruments=GBPUSD,EURUSD&years=3").json()
+    assert dane["instruments"] == 2
+
+
+def test_a_rewritten_post_keeps_its_body(klient):
+    csv = "time,open,high,low,close\n" + "\n".join(
+        f"2024-01-0{d} 08:{m:02d}:00,1.2000,1.2010,1.1990,1.2005" for d in range(1, 4) for m in (0, 15, 30, 45))
+    odp = klient.post("/api/index?__sciezka=upload", files={"file": ("dane.csv", csv, "text/csv")})
+    assert odp.status_code == 200
+    assert odp.json()["bars"] == 12
+
+
+def test_an_ordinary_request_is_left_alone(klient):
+    """Gdyby Vercel jednak zachował ścieżkę — albo lokalnie — nic nie ruszamy."""
+    assert klient.get("/api/options").status_code == 200
+    assert klient.get("/api/archive/status").status_code == 200
+
+
+def test_an_uninterpolated_placeholder_names_the_broken_rule(klient):
+    """`$1` oznacza, że podstawienie nie zadziałało — i tak ma to zostać powiedziane.
+
+    Samo 404 byłoby prawdziwe, ale prowadziłoby donikąd: sugerowałoby brakujący endpoint
+    zamiast błędnej reguły w konfiguracji wdrożenia.
+    """
+    odp = klient.get("/api/index?__sciezka=$1")
+    assert odp.status_code == 500
+    assert "vercel.json" in odp.json()["detail"]
+
+
+def test_the_entry_point_without_a_path_names_the_broken_rule(klient):
+    odp = klient.get("/api/index")
+    assert odp.status_code == 500
+    assert "__sciezka" in odp.json()["detail"]
 
 
 # --- system plików tylko do odczytu ---------------------------------------------------

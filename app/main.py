@@ -12,6 +12,7 @@ import zlib
 from datetime import date
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlencode
 from zoneinfo import available_timezones
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -51,6 +52,43 @@ UPLOAD_DIR = state_dir() / "uploads"
 DUKASCOPY_CACHE = state_dir() / "dukascopy_cache"
 
 app = FastAPI(title="Backtester GBP/USD", version="1.1.0")
+
+# Nazwa parametru, w którym przekierowanie Vercela przemyca pierwotną ścieżkę.
+VERCEL_PATH_PARAM = "__sciezka"
+VERCEL_ENTRY_PATH = "/api/index"
+
+
+class VercelPath:
+    """Przywraca ścieżkę żądania zgubioną przez przekierowanie Vercela.
+
+    Vercel kieruje `/api/*` do funkcji regułą `rewrites`, a ta **podmienia ścieżkę** na
+    docelową. Funkcja dostawała więc `/api/index` niezależnie od tego, o co pytał front,
+    a FastAPI takiej trasy nie ma — każde wywołanie API kończyło się 404, choć aplikacja
+    działała poprawnie. Reguła dokleja teraz pierwotną ścieżkę jako parametr, a to
+    oprogramowanie pośrednie wstawia ją z powrotem, zanim zadziała trasowanie.
+
+    Warunek jest celowo wąski: ruszamy wyłącznie wtedy, gdy ścieżką jest sam punkt wejścia.
+    Gdyby Vercel jednak zachował pierwotną ścieżkę — albo gdyby aplikacja działała zwyczajnie
+    lokalnie — nie zmieniamy niczego.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == VERCEL_ENTRY_PATH:
+            zapytanie = parse_qs(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True)
+            sciezka = (zapytanie.pop(VERCEL_PATH_PARAM, [""]) or [""])[0].lstrip("/")
+            # "$1" oznacza, że podstawienie nie zadziałało — lepiej zostawić 404 niż zgadywać.
+            if sciezka and not sciezka.startswith("$"):
+                scope = dict(scope)
+                scope["path"] = f"/api/{sciezka}"
+                scope["raw_path"] = scope["path"].encode("utf-8")
+                scope["query_string"] = urlencode(zapytanie, doseq=True).encode("latin-1")
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(VercelPath)
 
 # surowa treść CSV per zbiór danych; parsowanie jest leniwe, bo zależy od strefy czasowej
 _DATASETS: dict[str, str] = {}
@@ -651,6 +689,24 @@ async def _cache_static(request, call_next):
         elif path in ("/", "") or path.endswith(".html"):
             response.headers["Cache-Control"] = "public, max-age=0, s-maxage=60, must-revalidate"
     return response
+
+
+@app.api_route(VERCEL_ENTRY_PATH, methods=["GET", "POST", "PATCH", "DELETE"], include_in_schema=False)
+def _bez_sciezki() -> dict[str, Any]:
+    """Punkt wejścia funkcji zawołany bez pierwotnej ścieżki.
+
+    Trafiamy tu tylko wtedy, gdy przekierowanie nie przekazało, o co właściwie pytał front.
+    Bez tej trasy odpowiedzią byłoby zwykłe 404 — komunikat prawdziwy, ale prowadzący
+    donikąd, bo sugeruje brakujący endpoint zamiast błędnej reguły w konfiguracji.
+    """
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            "Przekierowanie nie przekazało pierwotnej ścieżki żądania. W vercel.json reguła "
+            f"dla /api/* musi kończyć się „?{VERCEL_PATH_PARAM}=$1” — bez tego funkcja dostaje "
+            "zawsze tę samą ścieżkę i nie wie, o który endpoint chodzi."
+        ),
+    )
 
 
 @app.get("/api/diagnostics")

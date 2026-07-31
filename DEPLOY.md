@@ -83,6 +83,19 @@ Front (`web/`) jest serwowany jako **statyka z CDN-u**, a funkcja Pythona obsłu
 problem — brakujący plik w paczce, wyjątek przy starcie — kończyłby się nie stroną z błędem,
 tylko surowym tekstem zamiast aplikacji. Przy tym podziale strona wstaje niezależnie od
 Pythona, a ewentualny problem z API widać jako komunikat w interfejsie.
+
+### Dlaczego reguła przekierowania ma na końcu `?__sciezka=$1`
+
+Bo `rewrites` na Vercelu **podmienia ścieżkę** żądania na docelową. Reguła
+`/api/(.*)` → `/api/index` sprawia, że funkcja dostaje `/api/index` niezależnie od tego,
+o co pytał front — a takiej trasy aplikacja nie ma, więc każde wywołanie API kończy się 404,
+choć serwer działa bez zarzutu.
+
+Reguła dokleja więc pierwotną ścieżkę jako parametr, a aplikacja wstawia ją z powrotem,
+zanim zadziała trasowanie. Warunek jest wąski: dzieje się to wyłącznie wtedy, gdy ścieżką
+jest sam punkt wejścia, więc lokalnie i przy zachowanej ścieżce nic się nie zmienia.
+Gdyby podstawienie `$1` kiedyś przestało działać, API odpowie komunikatem wskazującym
+wprost tę regułę, zamiast milczącym 404.
 | `requirements.txt` | Zależności instalowane w chmurze — tylko `fastapi` i `python-multipart`. |
 | `requirements-dev.txt` | To samo plus `uvicorn` i `pytest`, do pracy lokalnej. |
 | `.vercelignore` | Trzyma testy, narzędzia i pamięć podręczną poza wdrożeniem. |
