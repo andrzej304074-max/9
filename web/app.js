@@ -1042,13 +1042,14 @@ async function refreshLibrary() {
   $('library-body').innerHTML = state.library.map((e) => {
     const biezacy = e.id === state.datasetId;
     const okres = e.first_date && e.last_date ? `${e.first_date} → ${e.last_date}` : '—';
+    const nazwa = e.name || e.source || e.id;
     return `<tr>
-      <td class="${biezacy ? 'library-current' : ''}">${escapeHtml(e.name || e.source || e.id)}</td>
+      <td class="library-name ${biezacy ? 'library-current' : ''}" title="${escapeHtml(nazwa)}">${escapeHtml(nazwa)}</td>
       <td class="num">${e.bars ? Number(e.bars).toLocaleString('pl-PL') : '—'}</td>
       <td>${escapeHtml(okres)}</td>
       <td class="num">${e.interval_minutes ? `${e.interval_minutes} min` : '—'}</td>
       <td class="num">${formatBytes(e.bytes || 0)}</td>
-      <td>
+      <td class="library-tools">
         <div class="library-actions">
           <button type="button" class="btn btn-ghost" data-lib="open" data-id="${e.id}">Wczytaj</button>
           <button type="button" class="btn btn-ghost" data-lib="rename" data-id="${e.id}">Nazwa</button>

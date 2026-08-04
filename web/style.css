@@ -344,6 +344,28 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 /* Przyciski zostają w jednym rzędzie: gdy tabela nie mieści się w karcie, ma się przewijać
    w poziomie, a nie łamać akcje na cztery wiersze i obcinać im napisy. */
 .library-actions { display: flex; gap: 6px; flex-wrap: nowrap; }
+
+/* Kolumna z akcjami zostaje przy prawej krawędzi także wtedy, gdy reszta tabeli się przewija.
+   Bez tego wystarczyła długa nazwa zbioru (a taką ma każde wieloletnie pobranie), żeby
+   „Wczytaj” wyjechało poza kartę — przycisk był, tylko nie dało się go zobaczyć. */
+.data-table th.library-tools,
+.data-table td.library-tools {
+  position: sticky;
+  right: 0;
+  background: var(--surface);
+  box-shadow: -10px 0 10px -10px rgba(0, 0, 0, 0.35);
+}
+.data-table tbody tr:hover td.library-tools { background: var(--surface-2); }
+
+/* Nazwa ustępuje miejsca reszcie: interwał i okres i tak stoją w osobnych kolumnach,
+   więc skrócenie jej niczego nie ukrywa. Pełną wersję pokazuje dymek. */
+.library-name { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
+
+/* Rozmiar pliku jest najmniej przydatną z kolumn — na węższym ekranie ustępuje miejsca,
+   żeby reszta zmieściła się bez przewijania. */
+@media (max-width: 1400px) {
+  #library-table th:nth-child(5), #library-table td:nth-child(5) { display: none; }
+}
 .library-actions .btn { width: auto; margin: 0; padding: 3px 8px; font-size: 0.72rem; }
 .library-current { color: var(--series); }
 .library-current::after { content: " · wczytany"; font-weight: 400; color: var(--muted); }
