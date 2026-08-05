@@ -41,6 +41,11 @@ TIMEOUT_SECONDS = 8
 MAX_WORKERS = 24
 RETRIES = 2
 
+# Po tylu dobach z rzędu bez ani jednego pliku uznajemy, że to nie dziura w archiwum,
+# tylko blokada — i oddajemy sterowanie zamiast mielić resztę zakresu na pusto.
+MAX_DEAD_DAYS = 4
+DEAD_DAY_PAUSE = 1.0        # sekundy oddechu, gdyby powodem był limit żądań
+
 # Niedzielny handel zaczyna się dopiero wieczorem — wcześniejsze pliki są zawsze puste.
 SUNDAY_OPEN_HOUR = 21
 
@@ -673,6 +678,7 @@ class DownloadResult:
     failed_hours: int = 0
     stopped_early: bool = False   # przerwane budżetem czasu, nie brakiem danych
     source: str = "ticks"         # 'candles' albo 'ticks' — co ostatecznie zadziałało
+    skipped_days: list[date] = field(default_factory=list)   # doby, z których nie przyszło nic
 
     @property
     def complete(self) -> bool:
@@ -690,6 +696,7 @@ def download_window(
     cancelled: Optional[Callable[[], bool]] = None,
     deadline: Optional[float] = None,
     use_candles: bool = True,
+    tolerate_gaps: bool = False,
 ) -> DownloadResult:
     """Pobiera zakres dzień po dniu i mówi, dokąd zdążył.
 
@@ -700,6 +707,11 @@ def download_window(
 
     Awaria pojedynczego pliku godzinowego nie przerywa pobierania; jest liczona i zgłaszana.
     Dopiero gdy **nic** się nie udało, uznajemy to za problem z łączem.
+
+    `tolerate_gaps` mówi, że dane z tego instrumentu już wcześniej przychodziły — wtedy nawet
+    doba bez ani jednego pliku jest dziurą do zanotowania, a nie powodem do przerwania. Ustawia
+    to wznowione pobieranie: kolejny odcinek zaczyna się od dowolnego dnia i pojedyncza martwa
+    doba nie może przekreślić lat ściągniętej już historii.
     """
     instrument = instrument.upper()
     scale = instrument_scale(instrument)
@@ -716,6 +728,7 @@ def download_window(
 
     builder = BarBuilder(interval_minutes, price)
     attempted = 0
+    dead_streak = 0        # ile dób z rzędu nie oddało ani jednego pliku
 
     # Jedna próba na całe pobieranie: jeśli gotowe świece są czytelne, każda doba kosztuje
     # jeden plik zamiast dwudziestu czterech.
@@ -807,16 +820,34 @@ def download_window(
                         builder.feed_bi5(payload, when, scale)  # od razu w świece, bez listy ticków
                         result.hours_done += 1
 
-            # Doba, z której nie przyszedł ani jeden plik, oznacza problem systemowy,
-            # a nie pecha. Nie ma sensu mielić kolejnych tysięcy godzin, żeby to potwierdzić.
+            # Doba, z której nie przyszedł ani jeden plik, znaczy co innego na początku,
+            # a co innego w środku wieloletniego pobierania.
             if failed_today and failed_today == len(hours_today):
-                raise DataError(
-                    "Nie udało się pobrać z Dukascopy ani jednego pliku "
-                    f"({failed_today} prób dla dnia {day.isoformat()}). "
-                    "Użyj przycisku Sprawdź połączenie — powie, czy serwer w ogóle widzi "
-                    "datafeed.dukascopy.com. W razie blokady wgraj plik CSV ręcznie."
-                )
+                if result.hours_done == 0 and not tolerate_gaps:
+                    # Nic się jeszcze nie udało — archiwum jest po prostu nieosiągalne.
+                    # Nie ma sensu mielić kolejnych tysięcy godzin, żeby to potwierdzić.
+                    raise DataError(
+                        "Nie udało się pobrać z Dukascopy ani jednego pliku "
+                        f"({failed_today} prób dla dnia {day.isoformat()}). "
+                        "Użyj przycisku Sprawdź połączenie — powie, czy serwer w ogóle widzi "
+                        "datafeed.dukascopy.com. W razie blokady wgraj plik CSV ręcznie."
+                    )
 
+                # Dane już wcześniej przychodziły, więc to dziura w archiwum albo chwilowa
+                # blokada. Dziesięciu lat historii nie wolno wyrzucić przez jedną taką dobę:
+                # notujemy ją, przesuwamy się dalej i mówimy o tym na końcu.
+                result.skipped_days.append(day)
+                dead_streak += 1
+                result.covered_to = day
+                if dead_streak >= MAX_DEAD_DAYS:
+                    # Seria martwych dób to już nie dziura, tylko blokada. Oddajemy sterowanie
+                    # zamiast przemielić resztę zakresu na pusto — wznowienie spróbuje ponownie.
+                    result.stopped_early = True
+                    break
+                time.sleep(DEAD_DAY_PAUSE)      # daj archiwum odetchnąć, jeśli to limit żądań
+                continue
+
+            dead_streak = 0
             result.covered_to = day
             if progress is not None:
                 progress(result.hours_done + result.failed_hours, result.hours_total)

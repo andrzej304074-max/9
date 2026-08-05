@@ -130,6 +130,10 @@ class DukascopyChunkRequest(BaseModel):
     interval_minutes: int = 15
     price: str = "bid"
     with_header: bool = True
+    # Odcinek wznowiony: klient ma już świece z wcześniejszych dni tego samego pobierania.
+    # Wtedy martwa doba na początku odcinka jest dziurą do zanotowania, a nie powodem
+    # do przekreślenia całej dotychczasowej roboty.
+    resumed: bool = False
 
 
 # Pobieranie z Dukascopy idzie plik po pliku (jeden na godzinę), więc wieloletni zakres
@@ -451,6 +455,7 @@ def dukascopy_chunk(request: DukascopyChunkRequest) -> dict[str, Any]:
         price=request.price,
         cache_dir=DUKASCOPY_CACHE,
         deadline=deadline,
+        tolerate_gaps=request.resumed,
     )
     text = bars_to_csv(outcome.bars)
     if not request.with_header:
@@ -462,6 +467,7 @@ def dukascopy_chunk(request: DukascopyChunkRequest) -> dict[str, Any]:
         "covered_to": outcome.covered_to.isoformat() if outcome.covered_to else None,
         "complete": outcome.complete,
         "failed_hours": outcome.failed_hours,
+        "skipped_days": len(outcome.skipped_days),
     }
 
 

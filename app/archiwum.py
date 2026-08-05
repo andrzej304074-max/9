@@ -33,6 +33,10 @@ PIERWSZY_ROK = 2003          # tak głęboko sięga archiwum Dukascopy
 MAX_LAT = 25
 INTERWALY = (1, 5, 15, 30, 60)
 
+# Po tylu odcinkach z rzędu bez ani jednej świecy uznajemy, że archiwum nas blokuje,
+# i kończymy instrument zamiast mielić przez lata na pusto.
+MAX_BEZOWOCNYCH = 3
+
 
 # --- zakres i oszacowanie ------------------------------------------------------------
 
@@ -134,6 +138,8 @@ def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict
                 "bars": 0,
                 "parts": 0,
                 "failed_hours": 0,
+                "skipped_days": 0,      # doby, z których nie przyszło nic — dziury w danych
+                "bezowocne": 0,         # odcinki z rzędu bez ani jednej świecy
                 "dataset_id": None,
                 "note": "",
             }
@@ -232,6 +238,9 @@ def _kawalek(plan: dict[str, Any], pozycja: dict[str, Any], koniec_budzetu: floa
             price=plan["price"],
             cache_dir=cache_dir,
             deadline=koniec_budzetu,
+            # Odcinek zaczyna się od dowolnego dnia, więc pojedyncza martwa doba na jego
+            # początku nie może przekreślić lat ściągniętej już historii.
+            tolerate_gaps=pozycja["bars"] > 0,
         )
     except DataError as exc:
         # Archiwum nie odpowiada — nie ma sensu mielić dalej tego instrumentu.
@@ -245,6 +254,23 @@ def _kawalek(plan: dict[str, Any], pozycja: dict[str, Any], koniec_budzetu: floa
                                _bez_naglowka(wynik.bars))
         pozycja["bars"] += len(wynik.bars)
     pozycja["failed_hours"] += wynik.failed_hours
+    pozycja["skipped_days"] = pozycja.get("skipped_days", 0) + len(wynik.skipped_days)
+
+    # Odcinek, który nie przyniósł ani jednej świecy, a same puste doby, to sygnał blokady.
+    # Kilka takich z rzędu znaczy, że dalsze próby to mielenie na pusto — lepiej powiedzieć
+    # to wprost i zostawić w bibliotece to, co się udało, niż ciągnąć przez lata bez danych.
+    if wynik.skipped_days and not wynik.bars:
+        pozycja["bezowocne"] = pozycja.get("bezowocne", 0) + 1
+        if pozycja["bezowocne"] >= MAX_BEZOWOCNYCH:
+            pozycja["state"] = "error"
+            pozycja["note"] = (
+                f"Archiwum przestało oddawać dane po {pozycja['days_done']} dniach "
+                f"(pominięto {pozycja['skipped_days']} dób). Najczęściej to chwilowy limit "
+                "żądań — spróbuj ponownie za jakiś czas, pobrane godziny są w pamięci podręcznej."
+            )
+            return
+    elif wynik.bars:
+        pozycja["bezowocne"] = 0
 
     if wynik.covered_to is None:
         # Budżet skończył się, zanim domknął się choćby jeden dzień. Nic nie tracimy —
@@ -290,12 +316,27 @@ def _domknij(plan: dict[str, Any], pozycja: dict[str, Any]) -> None:
 
     pozycja["state"] = "done"
     pozycja["dataset_id"] = dataset_id
-    if pozycja["failed_hours"]:
-        pozycja["note"] = f"{pozycja['failed_hours']} godzin nie udało się pobrać — reszta jest kompletna."
+    pozycja["note"] = _uwaga_o_dziurach(pozycja)
     _sprzataj_pozycje(plan, pozycja)
 
 
 # --- kawałki -----------------------------------------------------------------------
+
+
+def _uwaga_o_dziurach(pozycja: dict[str, Any]) -> str:
+    """Co powiedzieć o kompletności gotowego zbioru.
+
+    Pominięte doby są ważniejsze od pojedynczych godzin: godzina to drobna luka, cała doba
+    to brakujący dzień handlowy, który w backteście po prostu nie istnieje. Powtórzenie
+    pobrania uzupełnia takie dziury, bo udane godziny siedzą w pamięci podręcznej.
+    """
+    pominiete, godziny = pozycja.get("skipped_days", 0), pozycja.get("failed_hours", 0)
+    if pominiete:
+        return (f"Pominięto {pominiete} dób, z których archiwum nie oddało nic — te dni nie "
+                "wejdą do backtestu. Powtórz pobranie, żeby je uzupełnić.")
+    if godziny:
+        return f"{godziny} godzin nie udało się pobrać — reszta jest kompletna."
+    return ""
 
 
 def _klucz_kawalka(plan_id: str, kod: str, numer: int) -> str:

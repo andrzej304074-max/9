@@ -447,6 +447,75 @@ def test_total_network_failure_points_at_the_connection_check(tmp_path, monkeypa
         duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 3), cache_dir=tmp_path)
 
 
+def martwa_doba(martwe: set[str], baza: int = 126_350):
+    """Archiwum, w którym wskazane doby nie oddają ani jednego pliku."""
+    def _fetch(url: str):
+        if "candles" in url:
+            return b""
+        # .../GBPUSD/2024/00/03/05h_ticks.bi5 → miesiąc jest indeksowany od zera
+        czesci = url.split("/")
+        rok, miesiac, dzien = czesci[-4], czesci[-3], czesci[-2]
+        if f"{rok}-{int(miesiac) + 1:02d}-{dzien}" in martwe:
+            return None
+        return make_bi5([(0, baza, baza - 10)])
+    return _fetch
+
+
+def test_one_dead_day_does_not_throw_away_the_years_already_downloaded(tmp_path, monkeypatch):
+    """Sedno: przy wieloletnim pobieraniu jedna martwa doba to dziura, a nie koniec świata.
+
+    Wcześniej dowolna doba bez ani jednego pliku przerywała całość wyjątkiem — po tysiącach
+    udanych godzin. Wystarczył chwilowy limit żądań, żeby stracić dziesięć lat roboty.
+    """
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwa_doba({"2024-01-03"}))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    result = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 5), cache_dir=tmp_path)
+
+    assert result.skipped_days == [date(2024, 1, 3)]
+    assert result.covered_to == date(2024, 1, 5)      # reszta zakresu doszła do końca
+    assert result.bars
+
+
+def test_a_dead_first_day_still_stops_a_fresh_download(tmp_path, monkeypatch):
+    """Gdy nic się jeszcze nie udało, martwa doba znaczy „archiwum nieosiągalne"."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwa_doba({"2024-01-02"}))
+    with pytest.raises(DataError, match="ani jednego pliku"):
+        duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 5), cache_dir=tmp_path)
+
+
+def test_a_resumed_download_treats_even_the_first_dead_day_as_a_gap(tmp_path, monkeypatch):
+    """Wznowiony odcinek zaczyna się od dowolnego dnia — martwy pierwszy dzień nie może
+    przekreślić historii ściągniętej w poprzednich odcinkach."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwa_doba({"2024-01-02"}))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    result = duka.download_window(
+        start=date(2024, 1, 2), end=date(2024, 1, 5), cache_dir=tmp_path, tolerate_gaps=True)
+
+    assert result.skipped_days == [date(2024, 1, 2)]
+    assert result.bars
+
+
+def test_a_run_of_dead_days_hands_control_back_instead_of_grinding(tmp_path, monkeypatch):
+    """Seria martwych dób to blokada, a nie dziury. Mielenie reszty zakresu na pusto
+    kosztowałoby dziesiątki tysięcy żądań bez jednej świecy w zamian."""
+    import app.dukascopy as duka
+
+    martwe = {f"2024-01-{d:02d}" for d in range(3, 32)}
+    monkeypatch.setattr(duka, "_fetch_hour", martwa_doba(martwe))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    result = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 31), cache_dir=tmp_path)
+
+    assert result.stopped_early
+    assert len(result.skipped_days) == duka.MAX_DEAD_DAYS
+    assert result.bars                                  # to, co zdążyło przyjść, zostaje
+
+
 def test_missing_files_are_not_treated_as_failures(tmp_path, monkeypatch):
     """404 to weekend albo święto — normalny stan, nie awaria."""
     import app.dukascopy as duka

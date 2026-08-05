@@ -809,6 +809,7 @@ async function downloadInChunks(body) {
   const parts = [];
   let bars = 0;
   let failed = 0;
+  let skipped = 0;      // doby, z których archiwum nie oddało nic
   let round = 0;
   let cursor = body.date_from;
   const humanDate = (s) => s.split('-').reverse().join('.');
@@ -836,7 +837,9 @@ async function downloadInChunks(body) {
         chunk = await callApi('api/dukascopy/chunk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...body, date_from: cursor, with_header: round === 0 }),
+          // `resumed` mówi serwerowi, że mamy już świece z wcześniejszych dni: martwa doba
+          // na początku odcinka jest wtedy dziurą do zanotowania, a nie powodem do przerwania.
+          body: JSON.stringify({ ...body, date_from: cursor, with_header: round === 0, resumed: bars > 0 }),
         });
       } finally {
         clearInterval(ticker);
@@ -844,6 +847,7 @@ async function downloadInChunks(body) {
       parts.push(chunk.csv);
       bars += chunk.bars;
       failed += chunk.failed_hours || 0;
+      skipped += chunk.skipped_days || 0;
       round += 1;
 
       // Serwer pobiera, ile zdąży w swoim limicie czasu, i mówi, dokąd doszedł.
@@ -862,9 +866,14 @@ async function downloadInChunks(body) {
 
     $('duka-fill').style.width = '100%';
     $('duka-text').textContent = `Scalam ${bars.toLocaleString('pl-PL')} świec i wysyłam…`;
-    if (failed) {
-      // Przy dziesiątkach tysięcy plików pojedyncze wywrotki są normalne — ale użytkownik
-      // ma prawo wiedzieć, że w danych są dziury.
+    // Przy dziesiątkach tysięcy plików pojedyncze wywrotki są normalne — ale użytkownik
+    // ma prawo wiedzieć, że w danych są dziury. Pominięta doba waży więcej niż godzina:
+    // to cały brakujący dzień handlowy, którego w backteście po prostu nie ma.
+    if (skipped) {
+      setStatus(`Uwaga: ${skipped} dób archiwum nie oddało w całości — tych dni nie ma `
+        + 'w danych i nie wejdą do backtestu. Powtórzenie pobrania je uzupełni '
+        + '(reszta jest już w pamięci podręcznej, więc pójdzie szybko).');
+    } else if (failed) {
       setStatus(`Uwaga: ${failed} godzin nie udało się pobrać mimo ponowień — w danych `
         + 'mogą być drobne luki. Powtórzenie pobrania uzupełni brakujące godziny '
         + '(reszta jest już w pamięci podręcznej, więc pójdzie szybko).');
@@ -1290,7 +1299,8 @@ function renderArchive(dane) {
     return `<tr>
       <td>${escapeHtml(p.label)}</td>
       <td class="num">${udzial}%</td>
-      <td class="num">${p.bars ? Number(p.bars).toLocaleString('pl-PL') : '—'}</td>
+      <td class="num">${p.bars ? Number(p.bars).toLocaleString('pl-PL') : '—'}${
+        p.skipped_days ? `<span class="hint-limit"> · −${p.skipped_days} dób</span>` : ''}</td>
       <td>${escapeHtml(stan)}${p.note ? ` — ${escapeHtml(p.note)}` : ''}</td>
     </tr>`;
   }).join('');

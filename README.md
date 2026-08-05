@@ -171,6 +171,13 @@ i przesuwa kursor. Wynika z tego kilka wygodnych własności:
   w bibliotece,
 - **powtórka nie pobiera drugi raz tego samego** — raz ściągnięte godziny są w pamięci podręcznej.
 
+Dziury w archiwum nie przerywają pracy. Pojedyncza godzina bez odpowiedzi jest liczona
+i pomijana; cała doba, z której nie przyszło nic, też — z tą różnicą, że jest raportowana
+osobno, bo to brakujący dzień handlowy, a nie drobna luka. Komunikat „nie udało się pobrać
+ani jednego pliku" pojawia się wyłącznie wtedy, gdy **nic** się nie udało od początku.
+Kilka martwych dób z rzędu traktujemy jako blokadę (najczęściej chwilowy limit żądań):
+instrument kończy się z wyjaśnieniem, a to, co zdążyło przyjść, zostaje w bibliotece.
+
 Dopiero domknięty instrument trafia do biblioteki jako jeden gotowy zbiór; niedokończone
 kawałki są tylko rusztowaniem i znikają po sklejeniu.
 

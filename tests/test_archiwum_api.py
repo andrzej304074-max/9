@@ -361,6 +361,70 @@ def test_a_dead_archive_is_reported_instead_of_grinding_on(client, monkeypatch):
     assert dane["plan"]["state"] == "done"      # nie ma na czym stać w miejscu
 
 
+def martwe_doby(martwe: set[str]):
+    """Archiwum, w którym wskazane doby nie oddają ani jednego pliku."""
+    dziala = archiwum_atrapa()
+
+    def _fetch(url: str):
+        if "candles" in url:
+            return b""
+        czesci = url.split("/")
+        rok, miesiac, dzien = czesci[-4], czesci[-3], czesci[-2]
+        if f"{rok}-{int(miesiac) + 1:02d}-{dzien}" in martwe:
+            return None
+        return dziala(url)
+    return _fetch
+
+
+def test_a_dead_day_in_the_middle_does_not_kill_the_instrument(client, monkeypatch):
+    """Zgłoszenie z wdrożenia: pobieranie dziesięciu lat przewracało się na jednej dobie.
+
+    Odcinek zaczyna się od dowolnego dnia, więc martwa doba wypadała na jego początku —
+    a wtedy „nic się nie udało" znaczyło „archiwum nieosiągalne", mimo lat już ściągniętych.
+    """
+    library = sys.modules["app.library"]
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwe_doby({"2024-01-03"}))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+    zacznij(client, years=1)
+    dane = dokoncz(client)
+
+    pozycja = dane["plan"]["instruments"][0]
+    assert pozycja["state"] == "done"
+    assert pozycja["skipped_days"] == 1
+    assert "Pominięto 1 dób" in pozycja["note"]
+    assert library.entries()[0]["bars"] > 0
+
+
+def test_a_gap_is_named_in_the_saved_entry(client, monkeypatch):
+    """Zbiór z dziurą trafia do biblioteki, ale użytkownik ma o niej wiedzieć."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwe_doby({"2024-01-03", "2024-01-04"}))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+    zacznij(client, years=1)
+    pozycja = dokoncz(client)["plan"]["instruments"][0]
+    assert pozycja["skipped_days"] == 2
+    assert "Powtórz pobranie" in pozycja["note"]
+
+
+def test_an_archive_that_stops_responding_ends_the_instrument_with_a_reason(client, monkeypatch):
+    """Blokada w trakcie to nie powód, żeby mielić przez lata na pusto."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwe_doby({f"2024-01-{d:02d}" for d in range(3, 6)}))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    monkeypatch.setattr(sys.modules["app.archiwum"], "MAX_BEZOWOCNYCH", 1)
+
+    zacznij(client, years=1)
+    pozycja = dokoncz(client)["plan"]["instruments"][0]
+    assert pozycja["state"] == "error"
+    assert "limit żądań" in pozycja["note"]
+
+
 def test_a_dead_archive_leaves_the_library_empty(client, monkeypatch):
     library = sys.modules["app.library"]
     import app.dukascopy as duka

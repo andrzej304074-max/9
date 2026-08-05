@@ -267,11 +267,18 @@ serwer spróbuje pobrać jeden testowy plik i powie wprost, co się stało: czy 
 odpowiada, ile to trwało, czy zwróciło błąd, czy ruch jest blokowany. To rozstrzyga
 w sekundę, czy problem jest po stronie sieci, czy aplikacji.
 
-**Pobieranie z Dukascopy przerywa się w połowie.** Pojedyncze nieudane godziny nie zatrzymują
-już pobierania — są pomijane i zliczane, a po zakończeniu dostajesz informację, ile ich było.
-Powtórzenie pobrania uzupełni luki, bo reszta jest już w pamięci podręcznej. Komunikat
-„nie udało się pobrać ani jednego pliku" oznacza natomiast realny problem z łączem albo
-z dostępem do archiwum.
+**Pobieranie z Dukascopy przerywa się w połowie.** Ani pojedyncze nieudane godziny, ani całe
+puste doby nie zatrzymują już pobierania — są pomijane i zliczane, a po zakończeniu dostajesz
+informację, ile ich było. Powtórzenie pobrania uzupełni luki, bo reszta jest już w pamięci
+podręcznej. Komunikat „nie udało się pobrać ani jednego pliku" pojawia się teraz wyłącznie
+wtedy, gdy **nic** się nie udało od samego początku — czyli przy realnym problemie z łączem
+albo z dostępem do archiwum.
+
+**„Archiwum przestało oddawać dane po N dniach".** Kilka dób z rzędu bez ani jednego pliku
+to najczęściej chwilowy limit żądań po stronie Dukascopy — łatwo go wywołać, ciągnąc
+dziesięciolecia bez przerwy. To, co zdążyło się pobrać, zostaje w bibliotece. Odczekaj
+kilkanaście minut i uruchom pobieranie ponownie: ściągnięte godziny są w pamięci podręcznej,
+więc powtórka szybko dojdzie do miejsca, w którym stanęła, i ruszy dalej.
 
 **Komunikat, że scalony plik przekracza limit.** Zakres pobrał się w całości, ale komplet
 danych nie mieści się w limicie żądania. Wybierz rzadszy interwał (np. 15 minut zamiast
