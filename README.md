@@ -355,6 +355,13 @@ Widoczne po przełączeniu na drugą strategię:
 | Bufor wybicia | Ile pipsów cena musi wyjść poza zakres, żeby wybicie się liczyło. Filtruje płytkie przekłucia. 0 = bez filtra. |
 | Gdy jedna świeca przebija obie granice | Z samego OHLC nie wynika, który poziom padł pierwszy. Domyślnie zakładamy, że **bliższy otwarciu** tej świecy (cena rusza od otwarcia). Wariant **„ta strona, w którą cena wyszła dalej"** nie modeluje kolejności, tylko odpowiada na pytanie, którędy rynek faktycznie wyszedł z zakresu — zwykle zgadza się z tym, co widać na wykresie. Można też wymusić stronę albo pominąć taki dzień jako nierozstrzygalny. |
 
+> **Nie zgadza się z Twoim wykresem? Kliknij w wiersz tabeli.** Rozwinie się podgląd świec
+> z tego dnia — dokładnie tych, na których liczył silnik — z podświetlonym oknem świecy
+> sygnałowej i godziną podaną w dwóch kolumnach: w ustawionej strefie i w UTC. Jeśli Twój
+> wykres zgadza się z kolumną UTC, a nie z pierwszą, przyczyną jest strefa czasowa w sekcji 1,
+> a nie logika strategii. Dane z Dukascopy są w UTC, a domyślna strefa aplikacji to
+> Europe/London — latem różnica wynosi godzinę.
+
 > **Otwarcie na granicy nie jest jej przebiciem.** Świeca sygnałowa często zamyka się na swoim
 > skraju, a następna stamtąd startuje — dystans od otwarcia do tej granicy wynosi wtedy zero.
 > Reguła „bliższy otwarciu" wskazywałaby ją zawsze, choćby cena natychmiast poszła w drugą
@@ -523,6 +530,7 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `GET /api/dukascopy/probe` | Pobiera jeden testowy plik godzinowy i opisuje wynik — diagnostyka na wypadek, gdy pobieranie nie rusza. |
 | `GET /api/storage/probe` | Pełny cykl zapis → odczyt → porównanie → usunięcie. Rozstrzyga, czy biblioteka przeżyje uśpienie instancji. |
 | `GET /api/diagnostics` | Czy wdrożenie ma wszystko, czego potrzebuje: pliki frontu, dane demo, magazyn, wersję Pythona. |
+| `GET /api/datasets/{id}/candles?date=…` | Surowe świece z jednego dnia, z godziną w ustawionej strefie i w UTC — do porównania wiersza tabeli z własnym wykresem. |
 | `GET /api/archive/estimate` | Ile plików, danych i czasu zajmie masowe pobranie — bez pobierania czegokolwiek. |
 | `POST /api/archive/start` | `{"instruments": ["GBPUSD"], "years": 10, "interval_minutes": 15, "price": "bid"}` → zakłada plan pobierania. |
 | `POST /api/archive/step` | Wykonuje tyle pracy, ile mieści się w limicie czasu, i oddaje postęp. Wołane w pętli aż plan przestanie być `running`. |

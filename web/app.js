@@ -187,6 +187,17 @@ function wireEvents() {
   $('library-body').addEventListener('click', handleLibraryAction);
   $('btn-library-refresh').addEventListener('click', refreshLibrary);
   $('btn-storage-probe').addEventListener('click', probeStorage);
+  $('trades-table').addEventListener('click', (event) => {
+    const wiersz = event.target.closest('tr.trade-row');
+    if (wiersz) togglePodgladSwiec(wiersz);
+  });
+  $('trades-table').addEventListener('keydown', (event) => {
+    const wiersz = event.target.closest('tr.trade-row');
+    if (wiersz && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      togglePodgladSwiec(wiersz);
+    }
+  });
   $('btn-archive-start').addEventListener('click', startArchive);
   $('btn-archive-cancel').addEventListener('click', cancelArchive);
   ['archive_years', 'archive_interval'].forEach((id) => {
@@ -1863,7 +1874,8 @@ function renderTradesTable() {
     const dirClass = t.direction === 1 ? 'tag-long' : 'tag-short';
     const outcomeClass = t.exit_reason === 'TP' ? 'tag-tp' : (t.exit_reason === 'SL' ? 'tag-sl' : 'tag-neutral');
     const attempt = t.attempt > 1 ? ` <span class="attempt">próba ${t.attempt}</span>` : '';
-    return `<tr>
+    return `<tr class="trade-row" data-day="${escapeHtml(t.date)}" tabindex="0"
+                title="Kliknij, żeby zobaczyć świece z tego dnia — dokładnie te, na których liczył silnik">
       <td>${escapeHtml(t.date)}</td>
       <td>${escapeHtml(t.weekday_name)}${attempt}</td>
       <td data-strategy-col="range_breakout" title="${escapeHtml(zakresOpis(t))}">${escapeHtml(t.breakout_label)}</td>
@@ -1881,6 +1893,77 @@ function renderTradesTable() {
       <td class="num">${t.hold_hours === null ? '—' : escapeHtml(fmtNum1.format(t.hold_hours) + ' h')}</td>
     </tr>`;
   }).join('');
+}
+
+/* ---------------- podgląd świec z jednego dnia ---------------- */
+
+// Rozstrzyga spory, których z samej tabeli wyników rozstrzygnąć się nie da: „na moim wykresie
+// o tej godzinie nie było takiego poziomu". Pokazuje surowe świece, na których liczył silnik,
+// z godziną w obu strefach — bo najczęstszą przyczyną rozjazdu jest właśnie strefa czasowa.
+async function togglePodgladSwiec(wiersz) {
+  const nastepny = wiersz.nextElementSibling;
+  if (nastepny && nastepny.classList.contains('candles-row')) {
+    nastepny.remove();
+    return;
+  }
+  document.querySelectorAll('.candles-row').forEach((el) => el.remove());
+
+  const dzien = wiersz.dataset.day;
+  const kolumn = wiersz.children.length;
+  const miejsce = document.createElement('tr');
+  miejsce.className = 'candles-row';
+  miejsce.innerHTML = `<td colspan="${kolumn}">Wczytuję świece z ${escapeHtml(dzien)}…</td>`;
+  wiersz.after(miejsce);
+
+  let dane;
+  try {
+    const tz = encodeURIComponent($('timezone').value);
+    dane = await callApi(
+      `api/datasets/${state.datasetId}/candles?date=${encodeURIComponent(dzien)}&timezone=${tz}`);
+  } catch (err) {
+    miejsce.innerHTML = `<td colspan="${kolumn}">Nie udało się wczytać świec: ${escapeHtml(err.message)}</td>`;
+    return;
+  }
+
+  const sygnal = $('signal_time').value || '08:00';
+  const wiersze = dane.candles.map((c) => {
+    const wSygnale = c.time_local >= sygnal
+      && c.time_local < dodajMinuty(sygnal, Number($('candle_minutes').value) || 15);
+    return `<tr class="${wSygnale ? 'candle-signal' : ''}">
+      <td>${escapeHtml(c.time_local)}</td>
+      <td class="muted">${escapeHtml(c.time_utc)}</td>
+      <td class="num">${escapeHtml(fmtPrice.format(c.open))}</td>
+      <td class="num">${escapeHtml(fmtPrice.format(c.high))}</td>
+      <td class="num">${escapeHtml(fmtPrice.format(c.low))}</td>
+      <td class="num">${escapeHtml(fmtPrice.format(c.close))}</td>
+    </tr>`;
+  }).join('');
+
+  miejsce.innerHTML = `<td colspan="${kolumn}">
+    <div class="candles-box">
+      <p class="hint">Świece z ${escapeHtml(dzien)} — dokładnie te, na których liczył silnik.
+        Podświetlone to okno świecy sygnałowej. Kolumna „UTC” pokazuje tę samą świecę w czasie
+        uniwersalnym: jeśli Twój wykres zgadza się z nią, a nie z pierwszą kolumną, to znaczy,
+        że strefa czasowa w sekcji 1 jest ustawiona inaczej niż na wykresie.</p>
+      <div class="table-scroll">
+        <table class="data-table candles-table">
+          <thead><tr>
+            <th>${escapeHtml(dane.timezone)}</th><th>UTC</th>
+            <th class="num">Otwarcie</th><th class="num">Szczyt</th>
+            <th class="num">Dołek</th><th class="num">Zamknięcie</th>
+          </tr></thead>
+          <tbody>${wiersze}</tbody>
+        </table>
+      </div>
+      ${dane.truncated ? '<p class="hint hint-limit">Pokazano początek dnia — świec było więcej.</p>' : ''}
+    </div>
+  </td>`;
+}
+
+function dodajMinuty(hhmm, minuty) {
+  const [g, m] = hhmm.split(':').map(Number);
+  const suma = g * 60 + m + minuty;
+  return `${String(Math.floor(suma / 60) % 24).padStart(2, '0')}:${String(suma % 60).padStart(2, '0')}`;
 }
 
 function exportCsv() {

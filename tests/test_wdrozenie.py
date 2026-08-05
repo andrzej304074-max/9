@@ -311,3 +311,63 @@ def test_every_serverless_marker_is_recognised(monkeypatch, zmienna):
     monkeypatch.setenv(zmienna, "1")
     sys.modules.pop("app.runtime", None)
     assert importlib.import_module("app.runtime").IS_SERVERLESS is True
+
+
+# --- podgląd świec z jednego dnia -------------------------------------------------------
+
+
+CSV_UTC = "time,open,high,low,close\n" + "\n".join(
+    f"2026-07-30T{h:02d}:{m:02d}:00+00:00,1.33400,1.33450,1.33350,1.33420"
+    for h in range(6, 12) for m in (0, 15, 30, 45))
+
+
+def test_the_candle_preview_shows_what_the_engine_used(monkeypatch, tmp_path):
+    """Rozstrzyga spór „na moim wykresie o tej godzinie nie było takiego poziomu"."""
+    from fastapi.testclient import TestClient
+
+    klient = TestClient(zaladuj(monkeypatch, tmp_path / "stan").app)
+    zbior = klient.post("/api/upload", files={"file": ("dane.csv", CSV_UTC, "text/csv")}).json()
+
+    dane = klient.get(f"/api/datasets/{zbior['dataset_id']}/candles"
+                      "?date=2026-07-30&timezone=UTC").json()
+    assert dane["count"] == 24
+    assert dane["candles"][0]["time_local"] == "06:00"
+    assert dane["candles"][0]["open"] == 1.33400
+
+
+def test_the_preview_shows_both_time_bases_side_by_side(monkeypatch, tmp_path):
+    """Sedno diagnostyki: dane są w UTC, a godzina sygnału liczona w innej strefie.
+
+    Bez zestawienia obu godzin obok siebie taki rozjazd wygląda na błąd silnika —
+    poziomy „nie zgadzają się z wykresem", bo pochodzą z innej godziny doby.
+    """
+    from fastapi.testclient import TestClient
+
+    klient = TestClient(zaladuj(monkeypatch, tmp_path / "stan").app)
+    zbior = klient.post("/api/upload", files={"file": ("dane.csv", CSV_UTC, "text/csv")}).json()
+
+    dane = klient.get(f"/api/datasets/{zbior['dataset_id']}/candles"
+                      "?date=2026-07-30&timezone=Europe/London").json()
+    pierwsza = dane["candles"][0]
+    assert pierwsza["time_local"] == "07:00"        # latem Londyn to UTC+1
+    assert pierwsza["time_utc"] == "06:00"
+    assert pierwsza["time_local"] != pierwsza["time_utc"]
+
+
+def test_the_preview_covers_only_the_requested_day(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    klient = TestClient(zaladuj(monkeypatch, tmp_path / "stan").app)
+    zbior = klient.post("/api/upload", files={"file": ("dane.csv", CSV_UTC, "text/csv")}).json()
+    assert klient.get(f"/api/datasets/{zbior['dataset_id']}/candles"
+                      "?date=2026-07-29&timezone=UTC").json()["count"] == 0
+
+
+def test_a_broken_date_is_refused_clearly(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    klient = TestClient(zaladuj(monkeypatch, tmp_path / "stan").app)
+    zbior = klient.post("/api/upload", files={"file": ("dane.csv", CSV_UTC, "text/csv")}).json()
+    odp = klient.get(f"/api/datasets/{zbior['dataset_id']}/candles?date=30-07-2026")
+    assert odp.status_code == 400
+    assert "RRRR-MM-DD" in odp.json()["detail"]

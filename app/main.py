@@ -9,7 +9,8 @@ import threading
 import time
 import uuid
 import zlib
-from datetime import date
+# `date_cls` bo parametr trasy nazywa się `date` i przesłania nazwę wewnątrz funkcji
+from datetime import date, date as date_cls, timezone as dt_timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode
@@ -644,6 +645,42 @@ def download_dataset(dataset_id: str) -> Response:
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{safe or dataset_id}.csv"'},
     )
+
+
+@app.get("/api/datasets/{dataset_id}/candles")
+def dataset_candles(dataset_id: str, date: str, timezone: str = "Europe/London",
+                    limit: int = 400) -> dict[str, Any]:
+    """Surowe świece z jednego dnia — dokładnie te, na których liczył silnik.
+
+    Powstało po sporze, którego nie dało się rozstrzygnąć z samej tabeli wyników: użytkownik
+    widział na swoim wykresie inne poziomy niż backtest. Każda świeca ma tu godzinę w obu
+    strefach naraz — ustawionej i UTC — bo najczęstszą przyczyną takiego rozjazdu jest to,
+    że dane są w UTC, a godzina sygnału liczona w innej strefie.
+    """
+    from zoneinfo import ZoneInfo
+
+    try:
+        dzien = date_cls.fromisoformat(date)
+        tz = ZoneInfo(timezone)
+    except (ValueError, KeyError):
+        raise DataError("Podaj datę w formacie RRRR-MM-DD i poprawną strefę czasową.")
+
+    bars = _parse(dataset_id, timezone).bars
+    wybrane = [b for b in bars if b.ts.astimezone(tz).date() == dzien]
+    return {
+        "date": date,
+        "timezone": timezone,
+        "count": len(wybrane),
+        "truncated": len(wybrane) > limit,
+        "candles": [
+            {
+                "time_local": b.ts.astimezone(tz).strftime("%H:%M"),
+                "time_utc": b.ts.astimezone(dt_timezone.utc).strftime("%H:%M"),
+                "open": b.open, "high": b.high, "low": b.low, "close": b.close,
+            }
+            for b in wybrane[:limit]
+        ],
+    }
 
 
 @app.post("/api/backtest")
