@@ -353,7 +353,14 @@ Widoczne po przełączeniu na drugą strategię:
 | Do kiedy czekać na wybicie | **Do końca dnia** (domyślnie), **do określonej godziny** (np. 17:00, koniec sesji londyńskiej) albo **przez N godzin** od zamknięcia świecy. Brak wybicia w oknie = dzień bez transakcji. |
 | Co uznajemy za przebicie | **Dotknięcie poziomu** — wystarczy, że cena sięgnie granicy; wejście po cenie tego poziomu, tak jak zadziałałoby zlecenie stop. **Zamknięcie poza zakresem** — świeca musi się zamknąć poza granicą; odfiltrowuje przekłucia knotem, ale wchodzi później i dalej, więc ryzyko na transakcję rośnie. |
 | Bufor wybicia | Ile pipsów cena musi wyjść poza zakres, żeby wybicie się liczyło. Filtruje płytkie przekłucia. 0 = bez filtra. |
-| Gdy jedna świeca przebija obie granice | Z samego OHLC nie wynika, który poziom padł pierwszy. Domyślnie zakładamy, że **bliższy otwarciu** tej świecy (cena rusza od otwarcia). Można też wymusić stronę albo pominąć taki dzień jako nierozstrzygalny. |
+| Gdy jedna świeca przebija obie granice | Z samego OHLC nie wynika, który poziom padł pierwszy. Domyślnie zakładamy, że **bliższy otwarciu** tej świecy (cena rusza od otwarcia). Wariant **„ta strona, w którą cena wyszła dalej"** nie modeluje kolejności, tylko odpowiada na pytanie, którędy rynek faktycznie wyszedł z zakresu — zwykle zgadza się z tym, co widać na wykresie. Można też wymusić stronę albo pominąć taki dzień jako nierozstrzygalny. |
+
+> **Otwarcie na granicy nie jest jej przebiciem.** Świeca sygnałowa często zamyka się na swoim
+> skraju, a następna stamtąd startuje — dystans od otwarcia do tej granicy wynosi wtedy zero.
+> Reguła „bliższy otwarciu" wskazywałaby ją zawsze, choćby cena natychmiast poszła w drugą
+> stronę, i dawała pozycję odwrotną do widocznego ruchu. W takim układzie o kierunku decyduje
+> więc zamknięcie świecy. Otwarcie **poza** zakresem (luka) to co innego: pierwsza cena świecy
+> leży już po tamtej stronie i to rozstrzyga wybicie, niezależnie od tego, co działo się dalej.
 | Co cena ma przebić | **Pełne wychylenia** (domyślnie) — szczyt i dołek świecy, razem z knotami. **Krańce korpusu** — otwarcie i zamknięcie; leżą bliżej, więc wybicia padają częściej i wcześniej. |
 | Gdzie postawić stop loss | Niezależnie od granicy wejścia. **Tam, gdzie druga granica** (domyślnie) — jak dotąd. **Za pełnym wychyleniem** albo **na krańcu korpusu** — pozwala wejść wcześnie na ciasnym korpusie, a stop trzymać dopiero za knotem, albo odwrotnie: wejść na pełnym wybiciu i trzymać ciasny stop przy korpusie. |
 | Powtórki w ciągu dnia | **Jedna transakcja dziennie** (domyślnie), **dopuść wybicie w drugą stronę** po zamknięciu pierwszej pozycji, albo **każde kolejne wybicie** aż do limitu dziennego. Kolejna próba nigdy nie startuje przed zamknięciem poprzedniej. |

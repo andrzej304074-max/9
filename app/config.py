@@ -35,6 +35,7 @@ BREAKOUT_RETRY_MODES = {
 
 BREAKOUT_BOTH_SIDES = {
     "open_proximity": "Pierwszy poziom bliższy otwarciu świecy",
+    "further": "Ta strona, w którą cena wyszła dalej",
     "high_first": "Zawsze najpierw górą",
     "low_first": "Zawsze najpierw dołem",
     "skip": "Pomiń — nie da się rozstrzygnąć",

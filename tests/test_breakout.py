@@ -322,6 +322,80 @@ def test_open_proximity_picks_the_nearer_edge():
     assert played(run(bars, breakout_both_sides="open_proximity"))[0].breakout_side == "down"
 
 
+def opens_on_the_lower_edge(close: float) -> list[Bar]:
+    """Świeca sygnałowa zamyka się na swoim dołku, następna stamtąd startuje.
+
+    Bardzo częsty układ, bo zamknięcie jednej świecy jest otwarciem następnej. Dolna granica
+    jest wtedy w odległości zera od otwarcia — i to właśnie psuło regułę „bliżej otwarcia".
+    """
+    return [
+        bar("08:00", 1.2005, RANGE_HIGH, RANGE_LOW, RANGE_LOW),      # zamknięcie na dołku
+        bar("08:15", RANGE_LOW, 1.2025, RANGE_LOW - 0.0001, close),  # start na granicy
+        quiet("08:45", close),
+    ]
+
+
+def test_opening_on_an_edge_does_not_count_as_breaking_it():
+    """Sedno zgłoszenia: silnik grał short tam, gdzie cena poszła wyraźnie w górę.
+
+    Świeca startowała na dolnej granicy, więc dystans do niej wynosił zero i reguła
+    „pierwszy poziom bliższy otwarciu" wskazywała ją zawsze — choćby cena natychmiast
+    poszła w drugą stronę. Stanie na poziomie to jednak nie jest jego przebicie.
+    """
+    trade = played(run(opens_on_the_lower_edge(close=1.2020)))[0]
+    assert trade.breakout_side == "up"
+    assert trade.direction == LONG
+
+
+def test_opening_on_an_edge_still_goes_down_when_the_candle_falls():
+    """Ten sam start, ale świeca zamyka się niżej — wtedy dołem jest poprawnie."""
+    trade = played(run(opens_on_the_lower_edge(close=1.1985)))[0]
+    assert trade.breakout_side == "down"
+    assert trade.direction == SHORT
+
+
+def test_a_gap_open_below_the_range_breaks_downwards_whatever_follows():
+    """Pierwsza cena świecy leży już poza zakresem — żaden późniejszy ruch tego nie cofnie."""
+    bars = [
+        range_candle(), quiet("08:15"),
+        bar("08:30", 1.1980, 1.2030, 1.1975, 1.2025),   # luka w dół, potem silny powrót w górę
+        quiet("08:45", 1.2025),
+    ]
+    assert played(run(bars))[0].breakout_side == "down"
+
+
+def test_a_gap_open_above_the_range_breaks_upwards_whatever_follows():
+    bars = [
+        range_candle(), quiet("08:15"),
+        bar("08:30", 1.2020, 1.2025, 1.1970, 1.1975),
+        quiet("08:45", 1.1975),
+    ]
+    assert played(run(bars))[0].breakout_side == "up"
+
+
+def test_the_further_rule_follows_the_bigger_excursion():
+    """Reguła dla tych, którzy pytają nie „co było pierwsze", tylko „którędy rynek wyszedł"."""
+    bars = [
+        range_candle(), quiet("08:15"),
+        # otwarcie bliżej szczytu, ale w dół cena wyszła znacznie dalej
+        bar("08:30", 1.2008, 1.2012, 1.1950, 1.1955),
+        quiet("08:45", 1.1955),
+    ]
+    assert played(run(bars, breakout_both_sides="open_proximity"))[0].breakout_side == "up"
+    assert played(run(bars, breakout_both_sides="further"))[0].breakout_side == "down"
+
+
+def test_the_further_rule_also_picks_upwards():
+    bars = [
+        range_candle(), quiet("08:15"),
+        # otwarcie bliżej dołka, ale w górę cena wyszła znacznie dalej
+        bar("08:30", 1.1992, 1.2060, 1.1988, 1.2055),
+        quiet("08:45", 1.2055),
+    ]
+    assert played(run(bars, breakout_both_sides="open_proximity"))[0].breakout_side == "down"
+    assert played(run(bars, breakout_both_sides="further"))[0].breakout_side == "up"
+
+
 # --- powtórki w obrębie dnia -------------------------------------------------------
 
 def two_breakouts_same_day() -> list[Bar]:

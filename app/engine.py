@@ -391,8 +391,31 @@ def _detect_breakout(
             return "up", entry_up
         if rule == "low_first":
             return "down", entry_down
-        # open_proximity: cena rusza od otwarcia, więc bliższy poziom pada wcześniej
-        return ("up", entry_up) if abs(upper - bar.open) <= abs(bar.open - lower) else ("down", entry_down)
+        if rule == "further":
+            # Ta strona, w którą cena wyszła dalej poza zakres. Nie modeluje kolejności zdarzeń,
+            # tylko odpowiada na pytanie „którędy rynek naprawdę wyszedł" — a to zwykle widać
+            # na wykresie gołym okiem i bywa bliższe temu, co człowiek uznałby za wybicie.
+            return ("up", entry_up) if (bar.high - upper) >= (lower - bar.low) else ("down", entry_down)
+
+        # open_proximity: cena rusza od otwarcia, więc bliższy poziom pada wcześniej.
+        do_gory, do_dolu = upper - bar.open, bar.open - lower
+
+        # Otwarcie już poza zakresem to wybicie rozstrzygnięte samym otwarciem — pierwsza cena
+        # świecy leży po tamtej stronie i żaden późniejszy ruch tego nie cofnie.
+        if do_dolu < 0:
+            return "down", entry_down
+        if do_gory < 0:
+            return "up", entry_up
+
+        # Otwarcie dokładnie na granicy: „bliżej" przestaje cokolwiek znaczyć, bo dystans wynosi
+        # zero, a stanie na poziomie to nie jest jego przebicie. Dzieje się to nagminnie, bo
+        # świeca sygnałowa często zamyka się na swoim skraju, a następna stamtąd startuje —
+        # i wtedy sama reguła wskazywałaby zawsze tę stronę, choćby cena poszła w drugą.
+        # O kierunku ruchu mówi wtedy zamknięcie świecy.
+        if do_gory == 0 or do_dolu == 0:
+            return ("up", entry_up) if bar.close >= bar.open else ("down", entry_down)
+
+        return ("up", entry_up) if do_gory <= do_dolu else ("down", entry_down)
 
     if hit_up:
         return "up", entry_up
