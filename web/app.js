@@ -426,12 +426,20 @@ function syncConditionalFields() {
     skip: 'Nowy sygnał jest ignorowany, dopóki poprzednia pozycja żyje.',
   }[positionMode] || '';
 
-  $('direction-hint').textContent = {
+  // To samo ustawienie znaczy co innego w każdej strategii: w pierwszej sygnałem jest
+  // kolor świecy, w drugiej — strona, którą puścił zakres. Opis musi mówić o tym, co
+  // faktycznie się liczy, inaczej wygląda na to, że silnik gra w drugą stronę.
+  $('direction-hint').textContent = (state.strategy === 'range_breakout' ? {
+    follow: 'Wybicie górą → long, wybicie dołem → short. To pierwotna logika strategii.',
+    invert: 'Wybicie górą → short, wybicie dołem → long — gra na fałszywe wybicie.',
+    long_only: 'Grane są tylko wybicia górą; wybicia dołem są pomijane.',
+    short_only: 'Grane są tylko wybicia dołem; wybicia górą są pomijane.',
+  } : {
     follow: 'Świeca zielona → long, czerwona → short. To pierwotna logika strategii.',
     invert: 'Świeca zielona → short, czerwona → long.',
     long_only: 'Grane są tylko sygnały długie; krótkie są pomijane.',
     short_only: 'Grane są tylko sygnały krótkie; długie są pomijane.',
-  }[$('direction_mode').value] || '';
+  })[$('direction_mode').value] || '';
 
   $('sizing-hint').textContent = {
     compound: 'Nominał = bieżący kapitał × dźwignia. Zyski powiększają kolejne pozycje.',
