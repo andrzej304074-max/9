@@ -135,6 +135,25 @@ def test_both_levels_in_one_candle_resolve_by_setting():
     assert run(bars, tie_break="tp_first").trades[0].exit_reason == EXIT_TP
 
 
+def test_a_result_decided_by_the_tie_break_is_marked_as_such():
+    """O wyniku zdecydowało ustawienie, a nie dane — wiersz ma to pokazywać.
+
+    Bez tego znaku „przegrana pozycja, która miała wygrać" wygląda na błąd silnika,
+    a jest granicą tego, co da się odczytać z OHLC.
+    """
+    bars = [GREEN, bar("2024-01-02 08:15", 1.2005, 1.2070, 1.1985, 1.2050)]
+    assert run(bars, tie_break="sl_first").trades[0].uncertain_exit
+    assert run(bars, tie_break="tp_first").trades[0].uncertain_exit
+
+
+def test_an_ordinary_result_is_not_marked_as_uncertain():
+    """Znak ma coś znaczyć — gdyby stał przy każdym wierszu, nie mówiłby nic."""
+    bars = [GREEN, bar("2024-01-02 08:15", 1.2005, 1.2008, 1.1985, 1.1988)]
+    trade = run(bars).trades[0]
+    assert trade.exit_reason == EXIT_SL
+    assert not trade.uncertain_exit
+
+
 def test_position_stays_open_when_data_runs_out():
     trade = run([GREEN] + flat_bars("2024-01-02", "08:15", 6, 1.2005)).trades[0]
     assert trade.status == STATUS_OPEN

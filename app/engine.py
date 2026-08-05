@@ -67,6 +67,11 @@ class Trade:
     exit_reason: Optional[str] = None
     bars_held: int = 0
 
+    # Wynik rozstrzygnięty wewnątrz jednej świecy, gdzie OHLC nie zapisuje kolejności zdarzeń:
+    # albo ta sama świeca dotknęła i SL, i TP, albo pozycja zamknęła się na świecy wejścia.
+    # Taki wiersz mógłby wyglądać inaczej na danych o drobniejszej rozdzielczości.
+    uncertain_exit: bool = False
+
     # uzupełniane w fazie 2
     notional: float = 0.0
     units: float = 0.0
@@ -118,6 +123,7 @@ class Trade:
             "exit_time": _local(self.exit_ts),
             "exit_price": self.exit_price,
             "exit_reason": self.exit_reason,
+            "uncertain_exit": self.uncertain_exit,
             "bars_held": self.bars_held,
             "hold_hours": self.hold_hours(),
             "notional": self.notional,
@@ -519,7 +525,8 @@ def _build_trades_breakout(bars: list[Bar], cfg: BacktestConfig, tz: ZoneInfo) -
             trade.stop_loss = entry_price - direction * risk
             trade.take_profit = entry_price + direction * risk * cfg.rr_ratio
 
-            _simulate_exit(trade, bars, idx, cfg, _time_exit_target(cfg, bars[idx].ts, tz))
+            _simulate_exit(trade, bars, idx, cfg, _time_exit_target(cfg, bars[idx].ts, tz),
+                           entry_inside_bar=True)
 
             traded += 1
             if cfg.breakout_retry_mode == "opposite":
@@ -550,8 +557,14 @@ def _simulate_exit(
     start_idx: int,
     cfg: BacktestConfig,
     target_utc: Optional[datetime],
+    entry_inside_bar: bool = False,
 ) -> None:
-    """Idzie po świecach od wejścia aż do trafienia SL/TP lub zamknięcia czasowego."""
+    """Idzie po świecach od wejścia aż do trafienia SL/TP lub zamknięcia czasowego.
+
+    `entry_inside_bar` mówi, że wejście nastąpiło **w środku** pierwszej rozpatrywanej świecy,
+    a nie na jej starcie — tak działa wybicie zakresu. Wtedy zamknięcie na tej samej świecy
+    jest nierozstrzygalne z samego OHLC i wiersz dostaje o tym adnotację.
+    """
     direction = trade.direction
     sl, tp = trade.stop_loss, trade.take_profit
 
@@ -579,6 +592,7 @@ def _simulate_exit(
             take_sl = cfg.tie_break == "sl_first"
             trade.exit_price = sl if take_sl else tp
             trade.exit_reason = EXIT_SL if take_sl else EXIT_TP
+            trade.uncertain_exit = True     # o wyniku zdecydowała reguła, nie dane
         elif hit_sl:
             trade.exit_price = sl
             trade.exit_reason = EXIT_SL
@@ -587,6 +601,11 @@ def _simulate_exit(
             trade.exit_reason = EXIT_TP
         else:
             continue
+
+        # Zamknięcie na świecy wejścia jest tak samo nierozstrzygalne: wchodzimy w jej środku,
+        # więc z OHLC nie wynika, czy poziom padł już po wejściu, czy jeszcze przed nim.
+        if entry_inside_bar and idx == start_idx:
+            trade.uncertain_exit = True
 
         trade.exit_ts = bar.ts
         trade.status = STATUS_CLOSED

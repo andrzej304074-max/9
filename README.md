@@ -447,6 +447,12 @@ Warto je znać, zanim potraktujesz wynik poważnie:
   „gdy jedna świeca dotyka i SL, i TP", domyślnie pesymistyczne. To samo dotyczy świecy
   przebijającej obie granice naraz. Dane 1-minutowe z Dukascopy rozstrzygają oba przypadki
   znacznie dokładniej i przy tej strategii warto po nie sięgnąć.
+
+  **Takie wiersze są oznaczone.** W kolumnie z wynikiem pojawia się przy nich znak **?**
+  z wyjaśnieniem — to pozycje, o których losie zdecydowało ustawienie, a nie dane. Dzięki temu
+  widać od razu, ile wyników jest niepewnych, zamiast zgadywać, czemu „wygrana" pozycja
+  została zamknięta stopem. W eksporcie CSV odpowiada temu kolumna `wynik_niepewny`.
+  Na danych demo wychodzi ich około 8 % — im drobniejsze świece, tym mniej.
 - **Brak wezwań do uzupełnienia depozytu.** Realny broker zamknąłby część pozycji, zanim kapitał
   dojdzie do zera.
 

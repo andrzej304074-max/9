@@ -650,3 +650,67 @@ def test_span_follows_the_chosen_stop_levels():
     trade = played(run(gapped_breakout(), sl_method="candle_span",
                        breakout_stop_levels="body"))[0]
     assert trade.risk_distance == pytest.approx(0.0010)      # korpus 1,2000–1,2010
+
+
+# --- wynik rozstrzygnięty wewnątrz jednej świecy ------------------------------------
+
+
+def test_a_candle_piercing_both_range_edges_stops_the_trade_on_entry():
+    """Dokładnie ta sytuacja stoi za zgłoszeniem „SL tam, gdzie pozycja miała wygrać".
+
+    Świeca, która sięga poza obie granice zakresu, wybija go i od razu dotyka stopa —
+    bo stop leży na przeciwnej granicy. Wynik jest przegrany, nawet jeśli cena zaraz potem
+    poszła w stronę take profita. Z OHLC nie wynika, co stało się pierwsze.
+    """
+    bars = [
+        range_candle(),
+        quiet("08:15"),
+        bar("08:30", 1.2000, 1.2015, 1.1985, 1.1988),   # przekłuwa górę i dół zakresu
+        bar("08:45", 1.1988, 1.1990, 1.1900, 1.1905),   # cena idzie dalej w dół, do TP
+    ]
+    trade = played(run(bars))[0]
+
+    assert trade.exit_reason == EXIT_SL
+    assert trade.uncertain_exit                          # wiersz mówi wprost, że to nierozstrzygalne
+    assert trade.exit_ts == bars[2].ts                   # zamknięte na świecy wejścia
+
+
+def test_the_same_candle_read_optimistically_gives_the_opposite_result():
+    """Ta sama świeca, inne ustawienie rozstrzygania — i pozycja jest wygrana.
+
+    To najlepszy dowód, że wynik zależy tu od reguły, a nie od danych.
+    """
+    bars = [
+        range_candle(),
+        quiet("08:15"),
+        bar("08:30", 1.2000, 1.2015, 1.1900, 1.1905),   # sięga i stopa, i celu
+    ]
+    assert played(run(bars))[0].exit_reason == EXIT_SL
+    assert played(run(bars, tie_break="tp_first"))[0].exit_reason == EXIT_TP
+    assert all(played(run(bars, tie_break=t))[0].uncertain_exit for t in ("sl_first", "tp_first"))
+
+
+def test_a_clean_breakout_is_not_marked_as_uncertain():
+    """Wybicie bez przekłucia drugiej strony jest w pełni rozstrzygalne."""
+    bars = [
+        range_candle(),
+        quiet("08:15"),
+        bar("08:30", 1.2005, 1.2020, 1.2004, 1.2018),   # tylko górą
+        bar("08:45", 1.2018, 1.2100, 1.2017, 1.2095),   # spokojnie do TP
+    ]
+    trade = played(run(bars))[0]
+    assert trade.exit_reason == EXIT_TP
+    assert not trade.uncertain_exit
+
+
+def test_the_close_beyond_trigger_avoids_the_whipsaw_candle():
+    """Wejście po zamknięciu poza zakresem omija świecę, która przekłuwa obie strony."""
+    bars = [
+        range_candle(),
+        quiet("08:15"),
+        bar("08:30", 1.2000, 1.2015, 1.1985, 1.2000),   # przekłuwa obie strony, zamyka w środku
+        bar("08:45", 1.2000, 1.2002, 1.1980, 1.1982),   # dopiero tu zamknięcie poza zakresem
+    ]
+    assert played(run(bars))[0].uncertain_exit                       # dotyk: wchodzi na przekłuciu
+    zamkniecie = played(run(bars, breakout_trigger="close_beyond"))
+    assert zamkniecie[0].entry_ts == bars[3].ts                      # wejście dopiero po zamknięciu

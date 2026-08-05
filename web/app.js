@@ -1828,6 +1828,15 @@ function renderTradesTable() {
         <td colspan="11">${escapeHtml(t.skip_reason || 'dzień pominięty')}</td>
       </tr>`;
     }
+    // Wynik rozstrzygnięty wewnątrz jednej świecy — z OHLC nie wynika kolejność zdarzeń,
+    // więc taki wiersz mógłby wyglądać inaczej na danych o drobniejszej rozdzielczości.
+    const niepewne = (trade) => (trade.uncertain_exit
+      ? ` <abbr class="uncertain" title="Wynik rozstrzygnięty wewnątrz jednej świecy: `
+        + `ta sama świeca sięgnęła i stop lossa, i take profita, albo pozycja zamknęła się `
+        + `na świecy wejścia. Z OHLC nie wynika, co stało się pierwsze — zdecydowało `
+        + `ustawienie „Gdy jedna świeca dotyka i SL, i TP”. Na danych 1-minutowych `
+        + `ten wiersz może wyjść inaczej.">?</abbr>`
+      : '');
     const dirClass = t.direction === 1 ? 'tag-long' : 'tag-short';
     const outcomeClass = t.exit_reason === 'TP' ? 'tag-tp' : (t.exit_reason === 'SL' ? 'tag-sl' : 'tag-neutral');
     const attempt = t.attempt > 1 ? ` <span class="attempt">próba ${t.attempt}</span>` : '';
@@ -1840,7 +1849,7 @@ function renderTradesTable() {
       <td class="num">${escapeHtml(fmtPrice.format(t.stop_loss))}</td>
       <td class="num">${escapeHtml(fmtPrice.format(t.take_profit))}</td>
       <td>${escapeHtml(t.exit_time || '—')}</td>
-      <td><span class="tag ${outcomeClass}">${escapeHtml(t.exit_reason || '—')}</span></td>
+      <td><span class="tag ${outcomeClass}">${escapeHtml(t.exit_reason || '—')}</span>${niepewne(t)}</td>
       <td class="num ${toneClass(t.pnl_money)}">${escapeHtml(signed(t.pnl_money, fmtMoney))}</td>
       <td class="num ${toneClass(t.pnl_pct)}">${escapeHtml(signed(t.pnl_pct, fmtPct2, '%'))}</td>
       <td class="num ${toneClass(t.cumulative_return_pct)}">${escapeHtml(signed(t.cumulative_return_pct, fmtPct2, '%'))}</td>
@@ -1851,8 +1860,8 @@ function renderTradesTable() {
 
 function exportCsv() {
   const header = ['data', 'dzien_tygodnia', 'wybicie', 'proba', 'kierunek', 'wejscie', 'stop_loss',
-    'take_profit', 'wyjscie', 'wynik', 'zysk_strata', 'procent', 'narastajaco_procent',
-    'godziny', 'status', 'powod'];
+    'take_profit', 'wyjscie', 'wynik', 'wynik_niepewny', 'zysk_strata', 'procent',
+    'narastajaco_procent', 'godziny', 'status', 'powod'];
   const lines = [header.join(',')];
 
   for (const t of visibleTrades()) {
@@ -1868,6 +1877,7 @@ function exportCsv() {
       played ? t.take_profit.toFixed(5) : '',
       t.exit_time || '',
       t.exit_reason || '',
+      t.uncertain_exit ? 'tak' : '',
       played ? t.pnl_money.toFixed(2) : '',
       played ? t.pnl_pct.toFixed(4) : '',
       played ? t.cumulative_return_pct.toFixed(4) : '',
