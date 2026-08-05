@@ -460,6 +460,16 @@ canvas { width: 100%; height: 100%; display: block; }
 
 .hint-limit { color: var(--warn); }
 
+/* Druga linia w komórce: godzina pod ceną wejścia, cena pod godziną wyjścia. Dokładanie
+   osobnych kolumn rozpycha tabelę, a bez tych danych nie da się porównać wiersza z wykresem. */
+.cell-sub {
+  display: block;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 400;
+}
+
 /* Znacznik przy wyniku rozstrzygniętym wewnątrz jednej świecy. Ma zwracać uwagę, ale nie
    krzyczeć: to nie błąd, tylko granica tego, co da się odczytać z OHLC. */
 .uncertain {

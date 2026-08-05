@@ -1793,6 +1793,21 @@ function visibleTrades() {
   return rows;
 }
 
+// Sama godzina wystarczy — data stoi w pierwszej kolumnie i powtarzanie jej tylko rozpycha tabelę.
+function godzina(stamp) {
+  return stamp ? String(stamp).slice(11) : '';
+}
+
+// Zakres, który cena miała przebić. Bez niego nie da się porównać wiersza z wykresem:
+// widać wynik, ale nie widać, od czego był liczony.
+function zakresOpis(t) {
+  if (!t.signal_high && !t.signal_low) return '';
+  return `Świeca sygnałowa: otwarcie ${fmtPrice.format(t.signal_open)} · `
+    + `szczyt ${fmtPrice.format(t.signal_high)} · dołek ${fmtPrice.format(t.signal_low)} · `
+    + `zamknięcie ${fmtPrice.format(t.signal_close)} `
+    + `(rozpiętość ${((t.signal_high - t.signal_low) / (state.result?.config?.pip_size || 0.0001)).toFixed(1)} pipsa)`;
+}
+
 function renderTradesTable() {
   document.querySelectorAll('#trades-table th[data-sort]').forEach((th) => {
     if (th.dataset.sort === state.sort.key) {
@@ -1851,12 +1866,14 @@ function renderTradesTable() {
     return `<tr>
       <td>${escapeHtml(t.date)}</td>
       <td>${escapeHtml(t.weekday_name)}${attempt}</td>
-      <td data-strategy-col="range_breakout">${escapeHtml(t.breakout_label)}</td>
+      <td data-strategy-col="range_breakout" title="${escapeHtml(zakresOpis(t))}">${escapeHtml(t.breakout_label)}</td>
       <td><span class="tag ${dirClass}">${escapeHtml(t.direction_label)}</span></td>
-      <td class="num">${escapeHtml(fmtPrice.format(t.entry_price))}</td>
+      <td class="num">${escapeHtml(fmtPrice.format(t.entry_price))}<span class="cell-sub">${
+        escapeHtml(godzina(t.entry_time))}</span></td>
       <td class="num">${escapeHtml(fmtPrice.format(t.stop_loss))}</td>
       <td class="num">${escapeHtml(fmtPrice.format(t.take_profit))}</td>
-      <td>${escapeHtml(t.exit_time || '—')}</td>
+      <td>${escapeHtml(godzina(t.exit_time) || '—')}<span class="cell-sub">${
+        escapeHtml(t.exit_price ? fmtPrice.format(t.exit_price) : '')}</span></td>
       <td><span class="tag ${outcomeClass}">${escapeHtml(t.exit_reason || '—')}</span>${niepewne(t)}</td>
       <td class="num ${toneClass(t.pnl_money)}">${escapeHtml(signed(t.pnl_money, fmtMoney))}</td>
       <td class="num ${toneClass(t.pnl_pct)}">${escapeHtml(signed(t.pnl_pct, fmtPct2, '%'))}</td>
@@ -1867,8 +1884,10 @@ function renderTradesTable() {
 }
 
 function exportCsv() {
-  const header = ['data', 'dzien_tygodnia', 'wybicie', 'proba', 'kierunek', 'wejscie', 'stop_loss',
-    'take_profit', 'wyjscie', 'wynik', 'wynik_niepewny', 'zysk_strata', 'procent',
+  const header = ['data', 'dzien_tygodnia', 'wybicie', 'proba', 'kierunek',
+    'swieca_otwarcie', 'swieca_szczyt', 'swieca_dolek', 'swieca_zamkniecie',
+    'wejscie_czas', 'wejscie', 'stop_loss', 'take_profit', 'wyjscie_czas', 'wyjscie',
+    'wynik', 'wynik_niepewny', 'zysk_strata', 'procent',
     'narastajaco_procent', 'godziny', 'status', 'powod'];
   const lines = [header.join(',')];
 
@@ -1880,10 +1899,16 @@ function exportCsv() {
       t.breakout_side || '',
       t.attempt,
       played ? t.direction_label : '',
+      t.signal_open.toFixed(5),
+      t.signal_high.toFixed(5),
+      t.signal_low.toFixed(5),
+      t.signal_close.toFixed(5),
+      t.entry_time || '',
       played ? t.entry_price.toFixed(5) : '',
       played ? t.stop_loss.toFixed(5) : '',
       played ? t.take_profit.toFixed(5) : '',
       t.exit_time || '',
+      played ? t.exit_price.toFixed(5) : '',
       t.exit_reason || '',
       t.uncertain_exit ? 'tak' : '',
       played ? t.pnl_money.toFixed(2) : '',
