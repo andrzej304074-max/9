@@ -291,6 +291,23 @@ TOKEN_PREFIX = "vercel_blob_rw_"        # tak zaczyna się każdy token Vercel B
 TOKEN_SUFFIX = "_READ_WRITE_TOKEN"
 
 
+def oczysc_token(wartosc: str) -> str:
+    """Zdejmuje z wartości to, co przykleja się przy kopiowaniu.
+
+    Token bierze się z zakładki `.env.local`, gdzie stoi w postaci `NAZWA="wartość"`. Bardzo
+    łatwo skopiować całą linię albo zostawić cudzysłowy — a wtedy w nagłówku ląduje coś,
+    czego magazyn nie rozpozna, i znowu wychodzi „nie wykrywa magazynu". Sam token może
+    kończyć się znakiem `=` (dopełnienie base64), więc rozcinamy tylko wtedy, gdy przed
+    pierwszym `=` stoi nazwa zmiennej, a nie początek tokenu.
+    """
+    wartosc = wartosc.strip()
+    if not wartosc.startswith(TOKEN_PREFIX) and "=" in wartosc:
+        nazwa, _, reszta = wartosc.partition("=")
+        if nazwa.strip() and nazwa.strip().replace("_", "").isalnum():
+            wartosc = reszta.strip()
+    return wartosc.strip().strip('"').strip("'").strip()
+
+
 def wyglada_na_token(wartosc: str) -> bool:
     """Czy to w ogóle jest token magazynu.
 
@@ -299,7 +316,7 @@ def wyglada_na_token(wartosc: str) -> bool:
     i też wygląda na „coś do uwierzytelniania" — kończy się odmową „Cannot get store id
     from token or header", z której nie wynika, że pomyliły się wartości.
     """
-    return wartosc.strip().startswith(TOKEN_PREFIX)
+    return oczysc_token(wartosc).startswith(TOKEN_PREFIX)
 
 
 def find_token() -> tuple[str, str]:
@@ -314,22 +331,22 @@ def find_token() -> tuple[str, str]:
     Dzięki temu wartość wklejona pod właściwą nazwą, ale nie ta co trzeba, nie przesłania
     prawdziwego tokenu leżącego gdzie indziej.
     """
-    domyslny = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
+    domyslny = os.environ.get("BLOB_READ_WRITE_TOKEN", "")
     if wyglada_na_token(domyslny):
-        return "BLOB_READ_WRITE_TOKEN", domyslny
+        return "BLOB_READ_WRITE_TOKEN", oczysc_token(domyslny)
 
     for nazwa, wartosc in sorted(os.environ.items()):
         if nazwa.endswith(TOKEN_SUFFIX) and wyglada_na_token(wartosc):
-            return nazwa, wartosc.strip()
+            return nazwa, oczysc_token(wartosc)
 
     for nazwa, wartosc in sorted(os.environ.items()):
         if wyglada_na_token(wartosc):
-            return nazwa, wartosc.strip()
+            return nazwa, oczysc_token(wartosc)
 
     # Nic nie ma właściwego kształtu. Oddajemy to, co stoi pod domyślną nazwą — sonda powie
     # wprost, że wartość nie wygląda na token, zamiast udawać, że zmiennej nie ma wcale.
-    if domyslny:
-        return "BLOB_READ_WRITE_TOKEN", domyslny
+    if domyslny.strip():
+        return "BLOB_READ_WRITE_TOKEN", domyslny.strip()
     for nazwa, wartosc in sorted(os.environ.items()):
         if nazwa.endswith(TOKEN_SUFFIX) and wartosc.strip():
             return nazwa, wartosc.strip()

@@ -131,7 +131,8 @@ podepnij magazyn obiektów Vercel Blob.
    tą samą nazwą, zaznaczając wszystkie środowiska. (Gdyby zakładki `.env.local` nie było,
    token wygenerujesz w sekcji **Tokens** tego magazynu.)
 
-   **Uważaj, którą wartość kopiujesz.** Token zaczyna się od `vercel_blob_rw_`. Leżący obok
+   **Uważaj, którą wartość kopiujesz.** Rozpoznasz token po **początku**: `vercel_blob_rw_`.
+   Koniec nie ma znaczenia — token bywa zakończony znakiem `=` i to normalne. Leżący obok
    `BLOB_WEBHOOK_PUBLIC_KEY` zaczyna się od `-----BEGIN PUBLIC KEY-----` i służy do czego
    innego — wklejony w to miejsce daje odmowę „Cannot get store id from token or header",
    bo identyfikator magazynu jest zaszyty w samym tokenie. Aplikacja rozpoznaje tę pomyłkę

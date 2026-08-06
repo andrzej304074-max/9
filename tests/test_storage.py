@@ -589,3 +589,43 @@ def test_a_proper_token_passes_the_shape_check():
     assert storage.wyglada_na_token("vercel_blob_rw_abc123_XYZ")
     assert not storage.wyglada_na_token("")
     assert not storage.wyglada_na_token("store_abc123")
+
+
+# --- co przykleja się przy kopiowaniu tokenu -------------------------------------------------
+
+TOKEN = "vercel_blob_rw_sklep123_LoSoWe=="
+
+
+@pytest.mark.parametrize("wklejone", [
+    TOKEN,
+    f"  {TOKEN}  ",                                  # spacje z zaznaczenia
+    f'"{TOKEN}"',                                    # cudzysłowy z pliku .env
+    f"'{TOKEN}'",
+    f'BLOB_READ_WRITE_TOKEN="{TOKEN}"',              # cała linia z zakładki .env.local
+    f"BLOB_READ_WRITE_TOKEN={TOKEN}",
+    f"MOJE_DANE_READ_WRITE_TOKEN={TOKEN}",
+])
+def test_the_token_survives_the_usual_copy_paste_mishaps(wklejone):
+    """Token bierze się z zakładki `.env.local`, gdzie stoi jako NAZWA="wartość".
+
+    Skopiowanie całej linii albo zostawienie cudzysłowów kończyło się nagłówkiem, którego
+    magazyn nie rozpoznaje — i znowu „nie wykrywa magazynu", tym razem bez żadnej wskazówki.
+    """
+    assert storage.oczysc_token(wklejone) == TOKEN
+    assert storage.wyglada_na_token(wklejone)
+
+
+def test_the_trailing_equals_sign_is_part_of_the_token():
+    """Token bywa zakończony `=` (dopełnienie base64) — nie wolno go uciąć."""
+    assert storage.oczysc_token(TOKEN).endswith("==")
+
+
+def test_a_pasted_line_is_cleaned_up_before_use(monkeypatch):
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", f'BLOB_READ_WRITE_TOKEN="{TOKEN}"')
+    assert storage.find_token() == ("BLOB_READ_WRITE_TOKEN", TOKEN)
+
+
+def test_cleaning_does_not_turn_a_public_key_into_a_token():
+    """Sprzątanie ma naprawiać literówki w kopiowaniu, a nie ukrywać pomyłkę co do wartości."""
+    assert not storage.wyglada_na_token(KLUCZ_PUBLICZNY)
