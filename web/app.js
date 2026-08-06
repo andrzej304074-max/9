@@ -1100,7 +1100,8 @@ async function probeStorage() {
     const kroki = (r.steps || [])
       .map((k) => `${k.ok ? '✓' : '✗'} ${k.krok}${k.szczegol ? ` (${k.szczegol})` : ''}`)
       .join(' · ');
-    out.textContent = `${r.backend || 'magazyn'}: ${kroki || 'brak kroków'}. ${r.hint || ''}`.trim();
+    const skad = r.token_env ? ` Token ze zmiennej ${r.token_env}.` : '';
+    out.textContent = `${r.backend || 'magazyn'}: ${kroki || 'brak kroków'}.${skad} ${r.hint || ''}`.trim();
     // Zapis może działać i mimo to nie przetrwać — o kolorze decyduje trwałość, nie sam cykl.
     out.classList.toggle('hint-limit', !(r.ok && r.persistent));
   });

@@ -259,6 +259,51 @@ class FallbackStorage:
         }
 
 
+TOKEN_PREFIX = "vercel_blob_rw_"        # tak zaczyna się każdy token Vercel Blob
+TOKEN_SUFFIX = "_READ_WRITE_TOKEN"
+
+
+def find_token() -> tuple[str, str]:
+    """Szuka tokenu magazynu w środowisku. Zwraca (nazwa zmiennej, wartość).
+
+    Vercel nazywa zmienną `BLOB_READ_WRITE_TOKEN` tylko wtedy, gdy zostawi się domyślny
+    przedrostek. Przy nazwanym magazynie albo drugim magazynie w projekcie przedrostek jest
+    inny — dostajemy `MOJE_DANE_READ_WRITE_TOKEN` i tak dalej. Trzymanie się jednej nazwy
+    kończyło się tym, że podpięty magazyn był niewidoczny, a aplikacja twierdziła, że go nie ma.
+
+    Dlatego sprawdzamy po kolei: nazwę domyślną, potem dowolną kończącą się tak samo,
+    a na końcu dowolną zmienną, której **wartość** wygląda na token Vercel Blob — to ostatnie
+    ratuje przypadek zmiennej nazwanej całkiem po swojemu.
+    """
+    domyslny = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
+    if domyslny:
+        return "BLOB_READ_WRITE_TOKEN", domyslny
+
+    for nazwa, wartosc in sorted(os.environ.items()):
+        if nazwa.endswith(TOKEN_SUFFIX) and wartosc.strip():
+            return nazwa, wartosc.strip()
+
+    for nazwa, wartosc in sorted(os.environ.items()):
+        if wartosc.strip().startswith(TOKEN_PREFIX):
+            return nazwa, wartosc.strip()
+
+    return "", ""
+
+
+def token_candidates() -> list[str]:
+    """Nazwy zmiennych, które wyglądają na związane z magazynem — bez wartości.
+
+    Sama nazwa nie jest tajemnicą, a wartość owszem, więc pokazujemy wyłącznie nazwy.
+    Bez tego „nie wykrywa magazynu" jest nie do zdiagnozowania zdalnie: nie wiadomo,
+    czy zmiennej nie ma, czy nazywa się inaczej, niż aplikacja szuka.
+    """
+    return sorted(
+        nazwa for nazwa, wartosc in os.environ.items()
+        if "BLOB" in nazwa.upper() or nazwa.endswith(TOKEN_SUFFIX)
+        or wartosc.strip().startswith(TOKEN_PREFIX)
+    )
+
+
 _ACTIVE: Optional[object] = None
 _SIGNATURE: Optional[tuple[str, str]] = None
 
@@ -271,7 +316,7 @@ def active():
     w teście) zostawiałaby magazyn wskazujący na poprzednie miejsce.
     """
     global _ACTIVE, _SIGNATURE
-    token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
+    _, token = find_token()
     signature = (token[:12], str(state_dir()))
     if _ACTIVE is None or _SIGNATURE != signature:
         local = LocalStorage()
@@ -313,15 +358,19 @@ def probe() -> dict[str, object]:
 
     # Opis czytamy dopiero po cyklu: dla magazynu z odwrotem to właśnie zapis rozstrzyga,
     # czy magazyn trwały odpowiada, czy zostaliśmy na kopii dyskowej.
+    nazwa_zmiennej, token = find_token()
     opis = dict(magazyn.describe())
-    opis["token_present"] = bool(os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip())
+    opis["token_present"] = bool(token)
+    opis["token_env"] = nazwa_zmiennej            # z której zmiennej wzięliśmy token
+    opis["token_candidates"] = token_candidates()  # same nazwy, nigdy wartości
     opis["steps"] = kroki
     opis["ok"] = all(k["ok"] for k in kroki)
-    opis["hint"] = _hint(bool(opis["ok"]), bool(opis["persistent"]), bool(opis["token_present"]))
+    opis["hint"] = _hint(bool(opis["ok"]), bool(opis["persistent"]), bool(opis["token_present"]),
+                         list(opis["token_candidates"]))
     return opis
 
 
-def _hint(ok: bool, trwaly: bool, token: bool) -> str:
+def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = None) -> str:
     """Jedno zdanie o tym, co wynik sondy właściwie znaczy.
 
     Sam „zapis się udał” niczego nie rozstrzyga: zapis do `/tmp` też się udaje, tyle że
@@ -338,9 +387,17 @@ def _hint(ok: bool, trwaly: bool, token: bool) -> str:
                 "na dysku instancji, czyli znikną przy uśpieniu. Token jest ustawiony, więc "
                 "problem leży po stronie magazynu: sprawdź, czy jest podpięty i czy token nie wygasł.")
     if not trwaly:
-        return ("Zapis i odczyt działają, ale trafiają na dysk instancji — przy wdrożeniu "
-                "bezserwerowym znikną przy uśpieniu. Żeby biblioteka przetrwała, podepnij "
-                "magazyn Vercel Blob (instrukcja w DEPLOY.md).")
+        podstawa = ("Zapis i odczyt działają, ale trafiają na dysk instancji — przy wdrożeniu "
+                    "bezserwerowym znikną przy uśpieniu.")
+        if kandydaci:
+            # Zmienne są, tylko żadna nie wygląda na token — najczęściej wdrożenie jest jeszcze
+            # sprzed ich dodania, bo zmienne wchodzą w życie dopiero przy nowym wdrożeniu.
+            return (f"{podstawa} Widzę zmienne: {', '.join(kandydaci)} — ale żadna nie zawiera "
+                    "tokenu. Najczęściej znaczy to, że wdrożenie jest starsze niż podpięcie "
+                    "magazynu: zrób ponowne wdrożenie (Deployments → Redeploy).")
+        return (f"{podstawa} Nie widzę żadnej zmiennej z tokenem magazynu. Jeżeli podpięcie już "
+                "zrobiłeś, zrób ponowne wdrożenie — zmienne wchodzą w życie dopiero przy nowym "
+                "wdrożeniu (Deployments → Redeploy). Instrukcja jest w DEPLOY.md.")
     return "Zapis jest trwały — biblioteka przeżyje uśpienie i kolejne wdrożenia."
 
 

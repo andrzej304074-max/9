@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -295,8 +296,9 @@ def test_the_probe_reports_a_working_but_ephemeral_disk(dysk):
     wynik = storage.probe()
     assert wynik["ok"] is True
     assert wynik["persistent"] is False
-    assert "Blob" in wynik["hint"]
     assert wynik["token_present"] is False
+    assert "dysk instancji" in wynik["hint"]
+    assert "DEPLOY.md" in wynik["hint"]
 
 
 def test_the_probe_names_the_store_as_the_problem_when_the_token_is_set(blob, tmp_path):
@@ -348,3 +350,110 @@ def test_the_library_on_plain_disk_reports_that_it_is_not_persistent(dysk):
 
     assert library.usage()["persistent"] is False
     assert library.usage()["backend"] == "dysk"
+
+
+# --- rozpoznanie tokenu w środowisku ------------------------------------------------------
+
+
+def czysto(monkeypatch):
+    """Środowisko bez żadnych śladów magazynu — testy nie mogą zależeć od tego, co stoi wokół."""
+    for nazwa in list(os.environ):
+        if "BLOB" in nazwa.upper() or nazwa.endswith(storage.TOKEN_SUFFIX):
+            monkeypatch.delenv(nazwa, raising=False)
+        elif os.environ[nazwa].strip().startswith(storage.TOKEN_PREFIX):
+            monkeypatch.delenv(nazwa, raising=False)
+
+
+def test_the_default_variable_name_is_found(monkeypatch):
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_ABC")
+    assert storage.find_token() == ("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_ABC")
+
+
+def test_a_named_store_uses_its_own_prefix(monkeypatch):
+    """Sedno zgłoszenia „podpiąłem magazyn, a dalej nie wykrywa".
+
+    Vercel nazywa zmienną `BLOB_READ_WRITE_TOKEN` tylko przy domyślnym przedrostku.
+    Nazwany magazyn albo drugi w projekcie dostaje własny — i magazyn stawał się niewidzialny.
+    """
+    czysto(monkeypatch)
+    monkeypatch.setenv("MOJE_DANE_READ_WRITE_TOKEN", "vercel_blob_rw_XYZ")
+    assert storage.find_token() == ("MOJE_DANE_READ_WRITE_TOKEN", "vercel_blob_rw_XYZ")
+
+
+def test_the_default_name_wins_when_both_are_present(monkeypatch):
+    """Przy dwóch magazynach domyślny jest tym, o który chodziło."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_DOMYSLNY")
+    monkeypatch.setenv("INNY_READ_WRITE_TOKEN", "vercel_blob_rw_INNY")
+    assert storage.find_token()[1] == "vercel_blob_rw_DOMYSLNY"
+
+
+def test_a_completely_custom_name_is_still_recognised_by_its_value(monkeypatch):
+    """Ostatnia deska ratunku: zmienna nazwana po swojemu, ale z tokenem w wartości."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("MAGAZYN", "vercel_blob_rw_ZZZ")
+    assert storage.find_token() == ("MAGAZYN", "vercel_blob_rw_ZZZ")
+
+
+def test_an_empty_variable_does_not_count_as_a_token(monkeypatch):
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "   ")
+    assert storage.find_token() == ("", "")
+
+
+def test_nothing_is_found_in_a_clean_environment(monkeypatch):
+    czysto(monkeypatch)
+    assert storage.find_token() == ("", "")
+
+
+def test_the_store_is_used_when_the_name_is_not_the_default_one(monkeypatch, tmp_path):
+    czysto(monkeypatch)
+    monkeypatch.setenv("MOJE_DANE_READ_WRITE_TOKEN", "vercel_blob_rw_XYZ")
+    monkeypatch.setenv("BACKTESTER_STATE_DIR", str(tmp_path))
+    storage.reset()
+    try:
+        assert isinstance(storage.active(), storage.FallbackStorage)
+    finally:
+        storage.reset()
+
+
+def test_candidates_list_names_but_never_values(monkeypatch):
+    """Nazwa zmiennej nie jest tajemnicą, wartość owszem — a bez nazw nie da się tego
+    zdiagnozować zdalnie."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("MOJE_DANE_READ_WRITE_TOKEN", "vercel_blob_rw_TAJNE")
+    monkeypatch.setenv("BLOB_STORE_ID", "store_123")
+
+    kandydaci = storage.token_candidates()
+    assert "MOJE_DANE_READ_WRITE_TOKEN" in kandydaci
+    assert "BLOB_STORE_ID" in kandydaci
+    assert not any("vercel_blob_rw_TAJNE" in k for k in kandydaci)
+
+
+def test_the_probe_says_which_variable_the_token_came_from(monkeypatch, tmp_path):
+    czysto(monkeypatch)
+    monkeypatch.setenv("BACKTESTER_STATE_DIR", str(tmp_path))
+    storage.reset()
+    try:
+        assert storage.probe()["token_env"] == ""
+        monkeypatch.setenv("MOJE_DANE_READ_WRITE_TOKEN", "vercel_blob_rw_XYZ")
+        storage.reset()
+        assert storage.probe()["token_env"] == "MOJE_DANE_READ_WRITE_TOKEN"
+    finally:
+        storage.reset()
+
+
+def test_the_hint_points_at_a_stale_deployment_when_variables_exist(monkeypatch, tmp_path):
+    """Zmienne są, tokenu nie ma — prawie zawsze znaczy to wdrożenie sprzed ich dodania."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_STORE_ID", "store_123")
+    monkeypatch.setenv("BACKTESTER_STATE_DIR", str(tmp_path))
+    storage.reset()
+    try:
+        wynik = storage.probe()
+        assert wynik["token_present"] is False
+        assert "BLOB_STORE_ID" in wynik["hint"]
+        assert "Redeploy" in wynik["hint"]
+    finally:
+        storage.reset()

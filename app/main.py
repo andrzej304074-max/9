@@ -770,6 +770,10 @@ def diagnostics() -> dict[str, Any]:
         "python": sys.version.split()[0],
         "runtime": describe_runtime(),
         "storage": library.usage(),
+        # Nazwy zmiennych, nigdy wartości — po to, żeby „nie wykrywa magazynu" dało się
+        # zdiagnozować zdalnie: czy zmiennej nie ma, czy nazywa się inaczej niż domyślna.
+        "blob_token_env": storage.find_token()[0],
+        "blob_token_candidates": storage.token_candidates(),
     }
 
 

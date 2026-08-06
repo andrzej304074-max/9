@@ -75,6 +75,10 @@ Przy pierwszym uruchomieniu Vercel zapyta o kilka rzeczy — na wszystkie odpowi
 |---|---|
 | `api/index.py` | Punkt wejścia funkcji. Vercel szuka w nim zmiennej `app` i traktuje ją jako aplikację ASGI. |
 | `vercel.json` | `outputDirectory` wskazuje `web/` jako statyczną stronę, a `rewrites` kieruje do funkcji wyłącznie `/api/*`. `includeFiles` dokłada do paczki funkcji pliki, których runtime nie wyśledzi po importach. |
+| `requirements.txt` | Zależności instalowane w chmurze — tylko `fastapi` i `python-multipart`. |
+| `requirements-dev.txt` | To samo plus `uvicorn` i `pytest`, do pracy lokalnej. |
+| `.vercelignore` | Trzyma testy, narzędzia i pamięć podręczną poza wdrożeniem. |
+| `app/runtime.py` | Rozpoznaje środowisko i w jednym miejscu zbiera wynikające z niego decyzje. |
 
 ### Dlaczego strona idzie osobno od API
 
@@ -96,10 +100,6 @@ zanim zadziała trasowanie. Warunek jest wąski: dzieje się to wyłącznie wted
 jest sam punkt wejścia, więc lokalnie i przy zachowanej ścieżce nic się nie zmienia.
 Gdyby podstawienie `$1` kiedyś przestało działać, API odpowie komunikatem wskazującym
 wprost tę regułę, zamiast milczącym 404.
-| `requirements.txt` | Zależności instalowane w chmurze — tylko `fastapi` i `python-multipart`. |
-| `requirements-dev.txt` | To samo plus `uvicorn` i `pytest`, do pracy lokalnej. |
-| `.vercelignore` | Trzyma testy, narzędzia i pamięć podręczną poza wdrożeniem. |
-| `app/runtime.py` | Rozpoznaje środowisko i w jednym miejscu zbiera wynikające z niego decyzje. |
 
 ---
 
@@ -121,8 +121,10 @@ podepnij magazyn obiektów Vercel Blob.
 3. Nadaj nazwę — dowolną, np. `backtester-dane` — i potwierdź.
 4. Na ekranie po utworzeniu wybierz **Connect Project** i wskaż projekt z backtesterem.
    Zaznacz wszystkie środowiska (*Production*, *Preview*, *Development*).
-5. Vercel sam doda do projektu zmienną środowiskową `BLOB_READ_WRITE_TOKEN`. Nie musisz jej
-   nigdzie kopiować ani wpisywać — aplikacja szuka dokładnie tej nazwy.
+5. Vercel sam doda do projektu zmienną środowiskową z tokenem. Nie musisz jej nigdzie
+   kopiować ani wpisywać. Przy domyślnym przedrostku nazywa się `BLOB_READ_WRITE_TOKEN`,
+   ale przy nazwanym magazynie (albo drugim w projekcie) dostaje własny przedrostek —
+   np. `MOJE_DANE_READ_WRITE_TOKEN`. Aplikacja rozpoznaje obie postacie.
 6. **Wdróż projekt ponownie.** Zmienne środowiskowe wchodzą w życie dopiero przy nowym
    wdrożeniu: zakładka **Deployments** → menu `…` przy ostatnim wdrożeniu → **Redeploy**.
 
@@ -137,8 +139,13 @@ cykl — zapisze plik próbny, odczyta go, porówna treść i usunie — po czym
 * **„Token jest, ale…"** — zmienna jest, lecz magazyn nie odpowiada. Sprawdź w zakładce
   **Storage**, czy magazyn nadal jest połączony z tym projektem.
 
+Gdy zapis działa, komunikat podaje też, **z której zmiennej** wzięty został token — to od razu
+potwierdza, że aplikacja patrzy tam, gdzie trzeba.
+
 To samo dostaniesz pod adresem `https://twoj-projekt.vercel.app/api/storage/probe`, gdyby
-wygodniej było zajrzeć tam wprost.
+wygodniej było zajrzeć tam wprost. Pole `token_candidates` wymienia wtedy **nazwy** zmiennych
+wyglądających na związane z magazynem (nigdy wartości) — po to, żeby dało się odróżnić „zmiennej
+nie ma" od „nazywa się inaczej, niż aplikacja szukała".
 
 ### Co warto wiedzieć
 
