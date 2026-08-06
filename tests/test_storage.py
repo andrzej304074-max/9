@@ -538,3 +538,54 @@ def test_the_error_never_carries_the_token(blob):
     blob.zapis_dziala = False
     magazyn.write("a.csv", "x")
     assert "TAJNY_TOKEN" not in magazyn.last_error
+
+
+# --- pomylona wartość w zmiennej ------------------------------------------------------------
+
+KLUCZ_PUBLICZNY = ("-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQ\n-----END PUBLIC KEY-----")
+
+
+def test_a_public_key_pasted_instead_of_the_token_is_named_as_such(monkeypatch, tmp_path):
+    """Realna pomyłka z wdrożenia: obok tokenu leży w panelu klucz publiczny webhooków.
+
+    Magazyn odpowiada wtedy „Cannot get store id from token or header", bo identyfikator
+    magazynu jest zaszyty w samym tokenie. Z tego komunikatu nie sposób wywnioskować,
+    że pomyliły się wartości — aplikacja musi to powiedzieć wprost.
+    """
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", KLUCZ_PUBLICZNY)
+    monkeypatch.setenv("BACKTESTER_STATE_DIR", str(tmp_path))
+    storage.reset()
+    try:
+        wynik = storage.probe()
+        assert wynik["token_present"] is True
+        assert wynik["token_shape_ok"] is False
+        assert storage.TOKEN_PREFIX in wynik["hint"]
+        assert "BLOB_WEBHOOK_PUBLIC_KEY" in wynik["hint"]
+    finally:
+        storage.reset()
+
+
+def test_a_real_token_elsewhere_wins_over_a_wrong_value_under_the_right_name(monkeypatch):
+    """Wartość wklejona pod właściwą nazwą, ale nie ta co trzeba, nie może przesłaniać
+    prawdziwego tokenu leżącego gdzie indziej."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", KLUCZ_PUBLICZNY)
+    monkeypatch.setenv("MAGAZYN_READ_WRITE_TOKEN", "vercel_blob_rw_PRAWDZIWY")
+    assert storage.find_token() == ("MAGAZYN_READ_WRITE_TOKEN", "vercel_blob_rw_PRAWDZIWY")
+
+
+def test_a_wrong_value_is_still_reported_rather_than_ignored(monkeypatch):
+    """Udawanie, że zmiennej nie ma, wysłałoby użytkownika po token, który już wpisał."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", KLUCZ_PUBLICZNY)
+    nazwa, wartosc = storage.find_token()
+    assert nazwa == "BLOB_READ_WRITE_TOKEN"
+    assert wartosc == KLUCZ_PUBLICZNY
+    assert storage.wyglada_na_token(wartosc) is False
+
+
+def test_a_proper_token_passes_the_shape_check():
+    assert storage.wyglada_na_token("vercel_blob_rw_abc123_XYZ")
+    assert not storage.wyglada_na_token("")
+    assert not storage.wyglada_na_token("store_abc123")

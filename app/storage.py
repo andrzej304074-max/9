@@ -141,6 +141,11 @@ class BlobStorage:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             self.last_error = f"{method} — brak połączenia: {exc}"
             return None
+        except Exception as exc:
+            # Np. wartość tokenu z nowymi liniami — nagłówek nie da się złożyć. To wciąż
+            # odmowa zapisu, a nie powód, żeby wywrócić aplikację przy zapisie biblioteki.
+            self.last_error = f"{method} — nie udało się wysłać żądania: {exc}"
+            return None
 
     def _listing(self, force: bool = False) -> dict[str, str]:
         with self._lock:
@@ -286,6 +291,17 @@ TOKEN_PREFIX = "vercel_blob_rw_"        # tak zaczyna się każdy token Vercel B
 TOKEN_SUFFIX = "_READ_WRITE_TOKEN"
 
 
+def wyglada_na_token(wartosc: str) -> bool:
+    """Czy to w ogóle jest token magazynu.
+
+    Identyfikator magazynu jest zaszyty w samym tokenie, dlatego musi mieć konkretny
+    kształt. Wklejenie w to miejsce klucza publicznego webhooków — leży obok w panelu
+    i też wygląda na „coś do uwierzytelniania" — kończy się odmową „Cannot get store id
+    from token or header", z której nie wynika, że pomyliły się wartości.
+    """
+    return wartosc.strip().startswith(TOKEN_PREFIX)
+
+
 def find_token() -> tuple[str, str]:
     """Szuka tokenu magazynu w środowisku. Zwraca (nazwa zmiennej, wartość).
 
@@ -294,22 +310,29 @@ def find_token() -> tuple[str, str]:
     inny — dostajemy `MOJE_DANE_READ_WRITE_TOKEN` i tak dalej. Trzymanie się jednej nazwy
     kończyło się tym, że podpięty magazyn był niewidoczny, a aplikacja twierdziła, że go nie ma.
 
-    Dlatego sprawdzamy po kolei: nazwę domyślną, potem dowolną kończącą się tak samo,
-    a na końcu dowolną zmienną, której **wartość** wygląda na token Vercel Blob — to ostatnie
-    ratuje przypadek zmiennej nazwanej całkiem po swojemu.
+    Pierwszeństwo ma wartość, która **wygląda** na token — dopiero potem sama nazwa zmiennej.
+    Dzięki temu wartość wklejona pod właściwą nazwą, ale nie ta co trzeba, nie przesłania
+    prawdziwego tokenu leżącego gdzie indziej.
     """
     domyslny = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
-    if domyslny:
+    if wyglada_na_token(domyslny):
         return "BLOB_READ_WRITE_TOKEN", domyslny
 
     for nazwa, wartosc in sorted(os.environ.items()):
-        if nazwa.endswith(TOKEN_SUFFIX) and wartosc.strip():
+        if nazwa.endswith(TOKEN_SUFFIX) and wyglada_na_token(wartosc):
             return nazwa, wartosc.strip()
 
     for nazwa, wartosc in sorted(os.environ.items()):
-        if wartosc.strip().startswith(TOKEN_PREFIX):
+        if wyglada_na_token(wartosc):
             return nazwa, wartosc.strip()
 
+    # Nic nie ma właściwego kształtu. Oddajemy to, co stoi pod domyślną nazwą — sonda powie
+    # wprost, że wartość nie wygląda na token, zamiast udawać, że zmiennej nie ma wcale.
+    if domyslny:
+        return "BLOB_READ_WRITE_TOKEN", domyslny
+    for nazwa, wartosc in sorted(os.environ.items()):
+        if nazwa.endswith(TOKEN_SUFFIX) and wartosc.strip():
+            return nazwa, wartosc.strip()
     return "", ""
 
 
@@ -385,21 +408,30 @@ def probe() -> dict[str, object]:
     opis = dict(magazyn.describe())
     opis["token_present"] = bool(token)
     opis["token_env"] = nazwa_zmiennej            # z której zmiennej wzięliśmy token
+    opis["token_shape_ok"] = wyglada_na_token(token)
     opis["token_candidates"] = token_candidates()  # same nazwy, nigdy wartości
     opis["steps"] = kroki
     opis["ok"] = all(k["ok"] for k in kroki)
     opis["hint"] = _hint(bool(opis["ok"]), bool(opis["persistent"]), bool(opis["token_present"]),
-                         list(opis["token_candidates"]), str(opis.get("last_error") or ""))
+                         list(opis["token_candidates"]), str(opis.get("last_error") or ""),
+                         bool(opis["token_shape_ok"]), nazwa_zmiennej)
     return opis
 
 
 def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = None,
-          blad: str = "") -> str:
+          blad: str = "", ksztalt_ok: bool = True, zmienna: str = "") -> str:
     """Jedno zdanie o tym, co wynik sondy właściwie znaczy.
 
     Sam „zapis się udał” niczego nie rozstrzyga: zapis do `/tmp` też się udaje, tyle że
     znika razem z instancją. Rozdzielamy więc „działa” od „przetrwa”.
     """
+    if token and not ksztalt_ok:
+        # Najczęstsza pomyłka przy ręcznym dodawaniu zmiennej: obok tokenu leży w panelu
+        # klucz publiczny webhooków i łatwo skopiować nie tę wartość.
+        return (f"Wartość w zmiennej {zmienna or 'z tokenem'} nie wygląda na token magazynu — "
+                f"token zaczyna się od „{TOKEN_PREFIX}”. Jeśli wkleiłeś klucz publiczny "
+                "(„-----BEGIN PUBLIC KEY-----”), to jest BLOB_WEBHOOK_PUBLIC_KEY, czyli inna "
+                "wartość. Właściwą znajdziesz w Storage → magazyn → zakładka „.env.local”.")
     if not ok and not token:
         return ("Zapis nie zadziałał w ogóle, a magazynu trwałego nie ma — sprawdź prawa do "
                 "katalogu i podepnij magazyn Vercel Blob (instrukcja w DEPLOY.md).")
