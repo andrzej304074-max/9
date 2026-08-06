@@ -121,10 +121,18 @@ podepnij magazyn obiektów Vercel Blob.
 3. Nadaj nazwę — dowolną, np. `backtester-dane` — i potwierdź.
 4. Na ekranie po utworzeniu wybierz **Connect Project** i wskaż projekt z backtesterem.
    Zaznacz wszystkie środowiska (*Production*, *Preview*, *Development*).
-5. Vercel sam doda do projektu zmienną środowiskową z tokenem. Nie musisz jej nigdzie
-   kopiować ani wpisywać. Przy domyślnym przedrostku nazywa się `BLOB_READ_WRITE_TOKEN`,
-   ale przy nazwanym magazynie (albo drugim w projekcie) dostaje własny przedrostek —
-   np. `MOJE_DANE_READ_WRITE_TOKEN`. Aplikacja rozpoznaje obie postacie.
+5. **Sprawdź, czy w projekcie jest zmienna `BLOB_READ_WRITE_TOKEN`** (Settings → Environment
+   Variables). Vercel dodaje ją tylko przy **tworzeniu** magazynu z wybranym projektem.
+   Podpięcie istniejącego magazynu uwierzytelnia przez OIDC i dokłada wyłącznie `BLOB_STORE_ID`
+   oraz `BLOB_WEBHOOK_PUBLIC_KEY` — a to za mało, bo aplikacja rozmawia z API po tokenie.
+
+   Jeśli tokenu nie ma, dodaj go ręcznie: **Storage → Twój magazyn → zakładka `.env.local`** →
+   skopiuj wartość `BLOB_READ_WRITE_TOKEN` → **Settings → Environment Variables** → dodaj pod
+   tą samą nazwą, zaznaczając wszystkie środowiska. (Gdyby zakładki `.env.local` nie było,
+   token wygenerujesz w sekcji **Tokens** tego magazynu.)
+
+   Nazwa nie musi być dokładnie taka: przy nazwanym magazynie Vercel używa własnego przedrostka,
+   np. `MOJE_DANE_READ_WRITE_TOKEN`, i aplikacja rozpoznaje obie postacie.
 6. **Wdróż projekt ponownie.** Zmienne środowiskowe wchodzą w życie dopiero przy nowym
    wdrożeniu: zakładka **Deployments** → menu `…` przy ostatnim wdrożeniu → **Redeploy**.
 
@@ -134,8 +142,14 @@ Otwórz aplikację i w panelu **Zapisane dane** kliknij **Sprawdź magazyn**. Se
 cykl — zapisze plik próbny, odczyta go, porówna treść i usunie — po czym powie wprost, co wyszło:
 
 * **„Zapis jest trwały"** — gotowe, biblioteka przeżyje uśpienie i kolejne wdrożenia.
-* **„…trafiają na dysk instancji"** — magazyn nie jest podpięty (brakuje zmiennej) albo
-  wdrożenie jest jeszcze sprzed jej dodania. Powtórz krok 6.
+* **„…trafiają na dysk instancji"** — brakuje tokenu. Komunikat wymieni wtedy nazwy zmiennych,
+  które serwer widzi, i to rozstrzyga, co dalej:
+  * widać **`BLOB_STORE_ID`** → magazyn jest podpięty, ale bez statycznego tokenu; dodaj go
+    ręcznie według kroku 5,
+  * widać inne zmienne, ale żadnej z tokenem → wdrożenie jest starsze niż ich dodanie;
+    powtórz krok 6,
+  * nie widać żadnej → połączenie nie doszło do skutku albo dotyczy innego projektu
+    lub środowiska.
 * **„Token jest, ale…"** — zmienna jest, lecz magazyn nie odpowiada. Sprawdź w zakładce
   **Storage**, czy magazyn nadal jest połączony z tym projektem.
 

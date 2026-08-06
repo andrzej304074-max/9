@@ -389,6 +389,15 @@ def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = 
     if not trwaly:
         podstawa = ("Zapis i odczyt działają, ale trafiają na dysk instancji — przy wdrożeniu "
                     "bezserwerowym znikną przy uśpieniu.")
+        if "BLOB_STORE_ID" in (kandydaci or []):
+            # Magazyn jest podpięty — widać jego identyfikator — ale brakuje statycznego tokenu.
+            # Podpięcie istniejącego magazynu uwierzytelnia przez OIDC i dokłada tylko
+            # `BLOB_STORE_ID` oraz klucz webhooków; token do zapisu powstaje przy *tworzeniu*
+            # magazynu. Aplikacja rozmawia z API po tokenie, więc trzeba go dodać ręcznie.
+            return (f"{podstawa} Magazyn jest podpięty (widzę BLOB_STORE_ID), ale brakuje tokenu "
+                    "do zapisu. Wejdź w Storage → swój magazyn → zakładka „.env.local”, skopiuj "
+                    "wartość BLOB_READ_WRITE_TOKEN, dodaj ją w Settings → Environment Variables "
+                    "pod tą samą nazwą i zrób Redeploy.")
         if kandydaci:
             # Zmienne są, tylko żadna nie wygląda na token — najczęściej wdrożenie jest jeszcze
             # sprzed ich dodania, bo zmienne wchodzą w życie dopiero przy nowym wdrożeniu.

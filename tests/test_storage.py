@@ -457,3 +457,26 @@ def test_the_hint_points_at_a_stale_deployment_when_variables_exist(monkeypatch,
         assert "Redeploy" in wynik["hint"]
     finally:
         storage.reset()
+
+
+def test_a_connected_store_without_a_token_gets_the_exact_next_step(monkeypatch, tmp_path):
+    """Odcisk palca z wdrożenia: magazyn podpięty, tokenu do zapisu brak.
+
+    Podpięcie istniejącego magazynu uwierzytelnia przez OIDC i dokłada tylko `BLOB_STORE_ID`
+    oraz klucz webhooków — statyczny token powstaje przy *tworzeniu* magazynu. Sama informacja
+    „nie widzę tokenu" prowadziła wtedy donikąd: użytkownik widział podpięty magazyn i słyszał,
+    że go nie ma. Komunikat musi podać konkretny następny ruch.
+    """
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_STORE_ID", "store_abc123")
+    monkeypatch.setenv("BLOB_WEBHOOK_PUBLIC_KEY", "klucz")
+    monkeypatch.setenv("BACKTESTER_STATE_DIR", str(tmp_path))
+    storage.reset()
+    try:
+        wynik = storage.probe()
+        assert wynik["token_present"] is False
+        assert "BLOB_STORE_ID" in wynik["hint"]
+        assert ".env.local" in wynik["hint"]
+        assert "Environment Variables" in wynik["hint"]
+    finally:
+        storage.reset()
