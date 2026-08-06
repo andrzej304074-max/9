@@ -61,10 +61,18 @@ class AtrapaBlob:
         if metoda == "PUT":
             if not self.zapis_dziala:
                 raise urllib.error.HTTPError(url, 500, "magazyn padł", None, None)
-            pathname = urllib.parse.unquote(url.split(storage.BLOB_API + "/")[1])
-            # Vercel domyślnie dokleja losowy przyrostek; klient ma to wyłączać.
-            if naglowki.get("x-add-random-suffix") not in ("0", "false"):
-                pathname += "-losowy123"
+            # Ścieżka idzie w parametrze `pathname`, nie jako segment adresu.
+            zapytanie = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            if "pathname" not in zapytanie:
+                raise urllib.error.HTTPError(url, 400, "brak parametru pathname", None, None)
+            pathname = zapytanie["pathname"][0]
+            if naglowki.get("access") != "public":
+                raise urllib.error.HTTPError(url, 400, "brak nagłówka access", None, None)
+            if naglowki.get("x-api-version") != storage.BLOB_API_VERSION:
+                raise urllib.error.HTTPError(url, 400, "zła wersja API", None, None)
+            # Nadpisanie istniejącego obiektu wymaga wyraźnej zgody.
+            if pathname in self.obiekty and naglowki.get("x-allow-overwrite") not in ("1", "true"):
+                raise urllib.error.HTTPError(url, 409, "obiekt już istnieje", None, None)
             self.obiekty[pathname] = request.data
             return _odpowiedz(json.dumps({"url": f"{PUBLIC}/{pathname}"}).encode())
 
@@ -306,7 +314,9 @@ def test_the_probe_names_the_store_as_the_problem_when_the_token_is_set(blob, tm
     wynik = storage.probe()
     assert wynik["persistent"] is False
     assert wynik["token_present"] is True
-    assert "token nie wygasł" in wynik["hint"]
+    # Odpowiedź magazynu kończy zgadywanie: widać kod i powód odmowy, a nie samo „nie udało się".
+    assert "Magazyn odpowiedział: PUT 500" in wynik["hint"]
+    assert wynik["last_error"].startswith("PUT 500")
 
 
 def test_the_probe_lists_every_step_of_the_cycle(dysk):
@@ -480,3 +490,51 @@ def test_a_connected_store_without_a_token_gets_the_exact_next_step(monkeypatch,
         assert "Environment Variables" in wynik["hint"]
     finally:
         storage.reset()
+
+
+# --- kontrakt API magazynu ---------------------------------------------------------------
+
+
+def test_the_path_goes_in_the_pathname_parameter(blob):
+    """Adres zapisu był zgadnięty źle: ścieżka jako segment adresu, a nie parametr.
+
+    Magazyn nie rozpoznawał wtedy żądania w ogóle, więc zapis cicho przepadał, a biblioteka
+    zostawała na ulotnym dysku instancji — przy pozornie poprawnie podpiętym magazynie.
+    """
+    magazyn = storage.BlobStorage("vercel_blob_rw_TEST")
+    assert magazyn.write("a.csv", "x")
+    assert magazyn.last_error == ""
+    assert storage.BLOB_PREFIX + "a.csv" in blob.obiekty
+
+
+def test_writing_the_same_key_twice_is_allowed(blob):
+    """Indeks biblioteki zmienia się przy każdym dodaniu zbioru — bez zgody na nadpisanie
+    magazyn odrzucałby każdy zapis poza pierwszym."""
+    magazyn = storage.BlobStorage("vercel_blob_rw_TEST")
+    assert magazyn.write("index.json", "{}")
+    assert magazyn.write("index.json", '{"a": 1}')
+    assert magazyn.read("index.json") == '{"a": 1}'
+
+
+def test_a_refusal_is_reported_with_its_status_and_reason(blob):
+    """Bez treści odmowy każda awaria magazynu wyglądała tak samo — i nie dało się jej naprawić."""
+    magazyn = storage.BlobStorage("vercel_blob_rw_TEST")
+    blob.zapis_dziala = False
+    assert magazyn.write("a.csv", "x") is False
+    assert "500" in magazyn.last_error
+    assert "magazyn padł" in magazyn.last_error
+
+
+def test_a_dead_connection_is_reported_as_such(blob):
+    magazyn = storage.BlobStorage("vercel_blob_rw_TEST")
+    blob.awaria = True
+    assert magazyn.write("a.csv", "x") is False
+    assert "brak połączenia" in magazyn.last_error
+
+
+def test_the_error_never_carries_the_token(blob):
+    """Diagnostyka trafia na ekran — token nie może się w niej znaleźć."""
+    magazyn = storage.BlobStorage("vercel_blob_rw_TAJNY_TOKEN")
+    blob.zapis_dziala = False
+    magazyn.write("a.csv", "x")
+    assert "TAJNY_TOKEN" not in magazyn.last_error

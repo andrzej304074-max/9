@@ -9,11 +9,13 @@ idzie tam i przeżywa zarówno uśpienie, jak i kolejne wdrożenia. Gdy tokenu n
 albo magazyn nie odpowiada, wracamy na dysk — aplikacja działa dalej, tyle że
 z ulotną biblioteką, i mówi o tym wprost zamiast obiecywać trwałość.
 
-Rozmowa z Vercel Blob idzie po jego API REST przez `urllib`, bez dokładania
-zależności. Formatu tego API nie dało się sprawdzić na żywo w środowisku, w którym
-projekt powstawał (polityka sieciowa blokuje ruch wychodzący), dlatego każda operacja
-ma odwrót do dysku, a `/api/storage/probe` pozwala sprawdzić jednym kliknięciem,
-czy magazyn faktycznie działa na Twoim wdrożeniu.
+Rozmowa z Vercel Blob idzie po jego API REST przez `urllib`, bez dokładania zależności.
+Kontrakt jest odtworzony z oficjalnego klienta (`vercel_blob`): ścieżka idzie w parametrze
+`pathname`, a nie jako segment adresu, zapis wymaga nagłówka `access` i zgody na nadpisanie,
+i obowiązuje konkretna wersja API. Ruchu wychodzącego nie da się sprawdzić na żywo
+w środowisku, w którym projekt powstawał, dlatego każda operacja ma odwrót do dysku,
+zapamiętuje odpowiedź magazynu przy odmowie, a `/api/storage/probe` pozwala sprawdzić
+jednym kliknięciem, czy magazyn faktycznie działa na Twoim wdrożeniu.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from .runtime import state_dir
 
 BLOB_API = "https://blob.vercel-storage.com"
 BLOB_PREFIX = "backtester/"
-BLOB_API_VERSION = "7"
+BLOB_API_VERSION = "10"
 TIMEOUT = 10
 LISTING_TTL = 30.0      # przez tyle sekund ufamy zapamiętanej liście obiektów
 
@@ -112,6 +114,7 @@ class BlobStorage:
         self._urls: dict[str, str] = {}     # klucz -> publiczny adres obiektu
         self._listed_at = 0.0
         self._lock = threading.Lock()
+        self.last_error = ""                # ostatnia odmowa magazynu, dla diagnostyki
 
     # --- niskopoziomowe wywołania ---------------------------------------------
 
@@ -125,7 +128,18 @@ class BlobStorage:
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
                 return response.read()
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except urllib.error.HTTPError as exc:
+            # Sama informacja „nie udało się" kazała zgadywać, co magazyn odrzucił.
+            # Kod i początek odpowiedzi mówią to wprost — i nie zawierają tokenu.
+            tresc = ""
+            try:
+                tresc = exc.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                pass
+            self.last_error = f"{method} {exc.code} {exc.reason}" + (f" — {tresc}" if tresc else "")
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            self.last_error = f"{method} — brak połączenia: {exc}"
             return None
 
     def _listing(self, force: bool = False) -> dict[str, str]:
@@ -170,14 +184,21 @@ class BlobStorage:
             return None
 
     def write(self, key: str, text: str) -> bool:
+        # Ścieżka idzie w parametrze `pathname`, a nie jako segment adresu — to nie jest
+        # kosmetyka, bo pod segmentem magazyn nie rozpoznaje żądania w ogóle.
         raw = self._call(
-            f"{BLOB_API}/{BLOB_PREFIX}{urllib.parse.quote(key)}",
+            f"{BLOB_API}/?pathname={urllib.parse.quote(BLOB_PREFIX + key)}",
             method="PUT",
             body=text.encode("utf-8"),
             headers={
+                "access": "public",
                 "x-content-type": "text/csv; charset=utf-8",
-                # bez tego Vercel dokleja losowy przyrostek i klucz przestaje być przewidywalny
-                "x-add-random-suffix": "0",
+                # Ten sam klucz zapisujemy wielokrotnie — indeks biblioteki zmienia się przy
+                # każdym dodaniu zbioru. Bez zgody na nadpisanie magazyn odrzuca drugi zapis.
+                "x-allow-overwrite": "1",
+                # Bez tego CDN trzymałby indeks rok, a my potrzebujemy świeżego przy każdym
+                # odczycie — inaczej nowy zbiór byłby niewidoczny dla kolejnej instancji.
+                "x-cache-control-max-age": "0",
             },
         )
         if raw is None:
@@ -209,7 +230,8 @@ class BlobStorage:
         return key in self._listing()
 
     def describe(self) -> dict[str, object]:
-        return {"backend": self.name, "persistent": True, "location": BLOB_API + "/" + BLOB_PREFIX}
+        return {"backend": self.name, "persistent": True, "location": BLOB_API + "/" + BLOB_PREFIX,
+                "last_error": self.last_error}
 
 
 class FallbackStorage:
@@ -256,6 +278,7 @@ class FallbackStorage:
             "persistent": self.persistent,
             "location": BLOB_API + "/" + BLOB_PREFIX,
             "degraded": self.degraded,
+            "last_error": self.primary.last_error,
         }
 
 
@@ -366,11 +389,12 @@ def probe() -> dict[str, object]:
     opis["steps"] = kroki
     opis["ok"] = all(k["ok"] for k in kroki)
     opis["hint"] = _hint(bool(opis["ok"]), bool(opis["persistent"]), bool(opis["token_present"]),
-                         list(opis["token_candidates"]))
+                         list(opis["token_candidates"]), str(opis.get("last_error") or ""))
     return opis
 
 
-def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = None) -> str:
+def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = None,
+          blad: str = "") -> str:
     """Jedno zdanie o tym, co wynik sondy właściwie znaczy.
 
     Sam „zapis się udał” niczego nie rozstrzyga: zapis do `/tmp` też się udaje, tyle że
@@ -385,7 +409,9 @@ def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = 
     if not trwaly and token:
         return ("Zapis i odczyt działają, ale magazyn Blob nie przyjął danych — zostały tylko "
                 "na dysku instancji, czyli znikną przy uśpieniu. Token jest ustawiony, więc "
-                "problem leży po stronie magazynu: sprawdź, czy jest podpięty i czy token nie wygasł.")
+                "problem leży po stronie magazynu."
+                + (f" Magazyn odpowiedział: {blad}" if blad else
+                   " Sprawdź, czy jest podpięty i czy token nie wygasł."))
     if not trwaly:
         podstawa = ("Zapis i odczyt działają, ale trafiają na dysk instancji — przy wdrożeniu "
                     "bezserwerowym znikną przy uśpieniu.")
