@@ -308,6 +308,17 @@ def oczysc_token(wartosc: str) -> str:
     return wartosc.strip().strip('"').strip("'").strip()
 
 
+def sklejone_wartosci(wartosc: str) -> bool:
+    """Czy w jednej wartości siedzą dwie sklejone.
+
+    Dopełnienie base64 (`=`) występuje wyłącznie na końcu ciągu. Jeśli po nim idzie coś
+    jeszcze, to znaczy, że za tokenem doklejono kolejną wartość — w praktyce klucz publiczny
+    webhooków, który w panelu leży tuż obok i przy zaznaczaniu myszą łatwo złapać oba naraz.
+    Magazyn odrzuca wtedy taki token, nie tłumacząc, że problem jest w jego końcówce.
+    """
+    return "=" in oczysc_token(wartosc).rstrip("=")
+
+
 def wyglada_na_token(wartosc: str) -> bool:
     """Czy to w ogóle jest token magazynu.
 
@@ -426,22 +437,32 @@ def probe() -> dict[str, object]:
     opis["token_present"] = bool(token)
     opis["token_env"] = nazwa_zmiennej            # z której zmiennej wzięliśmy token
     opis["token_shape_ok"] = wyglada_na_token(token)
+    opis["token_glued"] = bool(token) and sklejone_wartosci(token)
     opis["token_candidates"] = token_candidates()  # same nazwy, nigdy wartości
     opis["steps"] = kroki
     opis["ok"] = all(k["ok"] for k in kroki)
     opis["hint"] = _hint(bool(opis["ok"]), bool(opis["persistent"]), bool(opis["token_present"]),
                          list(opis["token_candidates"]), str(opis.get("last_error") or ""),
-                         bool(opis["token_shape_ok"]), nazwa_zmiennej)
+                         bool(opis["token_shape_ok"]), nazwa_zmiennej,
+                         bool(opis["token_glued"]))
     return opis
 
 
 def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = None,
-          blad: str = "", ksztalt_ok: bool = True, zmienna: str = "") -> str:
+          blad: str = "", ksztalt_ok: bool = True, zmienna: str = "",
+          sklejony: bool = False) -> str:
     """Jedno zdanie o tym, co wynik sondy właściwie znaczy.
 
     Sam „zapis się udał” niczego nie rozstrzyga: zapis do `/tmp` też się udaje, tyle że
     znika razem z instancją. Rozdzielamy więc „działa” od „przetrwa”.
     """
+    if token and sklejony:
+        # Token i klucz publiczny leżą w panelu obok siebie; przy zaznaczaniu myszą łatwo
+        # złapać oba naraz. Magazyn odrzuca wtedy token, nie mówiąc, że rzecz jest w końcówce.
+        return (f"Wartość w zmiennej {zmienna or 'z tokenem'} wygląda na dwie wartości sklejone "
+                "w jedną: token, a zaraz za nim coś jeszcze. Token kończy się tam, gdzie kończy "
+                "się jego własny ciąg — nic nie może po nim następować. Skopiuj samą wartość "
+                "BLOB_READ_WRITE_TOKEN, bez sąsiedniego BLOB_WEBHOOK_PUBLIC_KEY.")
     if token and not ksztalt_ok:
         # Najczęstsza pomyłka przy ręcznym dodawaniu zmiennej: obok tokenu leży w panelu
         # klucz publiczny webhooków i łatwo skopiować nie tę wartość.

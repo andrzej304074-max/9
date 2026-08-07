@@ -629,3 +629,52 @@ def test_a_pasted_line_is_cleaned_up_before_use(monkeypatch):
 def test_cleaning_does_not_turn_a_public_key_into_a_token():
     """Sprzątanie ma naprawiać literówki w kopiowaniu, a nie ukrywać pomyłkę co do wartości."""
     assert not storage.wyglada_na_token(KLUCZ_PUBLICZNY)
+
+
+# --- token sklejony z sąsiednią wartością ----------------------------------------------------
+
+KLUCZ_DER = "MCowBQYDK2VwAyEAnT+j6VX3AZzx8NCZresoiYD6wjUDDBezghEzhRajjoA="
+SKLEJONE = f"{TOKEN}{KLUCZ_DER}"
+
+
+def test_a_token_with_something_glued_after_it_is_recognised():
+    """Token i klucz publiczny leżą w panelu obok siebie — myszą łatwo złapać oba naraz.
+
+    Sklejona wartość zaczyna się poprawnie, więc sprawdzenie samego początku jej nie wyłapie.
+    Rozstrzyga dopełnienie base64: `=` występuje wyłącznie na końcu ciągu, więc znak `=`
+    w środku znaczy, że dalej idzie już druga wartość.
+    """
+    assert storage.wyglada_na_token(SKLEJONE)         # początek się zgadza…
+    assert storage.sklejone_wartosci(SKLEJONE)        # …ale to nie jest jeden token
+
+
+def test_a_clean_token_is_not_reported_as_glued():
+    """Token kończący się dopełnieniem base64 jest poprawny i nie może wpaść w to sito."""
+    assert not storage.sklejone_wartosci(TOKEN)
+    assert not storage.sklejone_wartosci("vercel_blob_rw_sklep_bezDopelnienia")
+
+
+def test_the_probe_names_the_glued_value(monkeypatch, tmp_path):
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", SKLEJONE)
+    monkeypatch.setenv("BACKTESTER_STATE_DIR", str(tmp_path))
+    storage.reset()
+    try:
+        wynik = storage.probe()
+        assert wynik["token_glued"] is True
+        assert "dwie wartości sklejone" in wynik["hint"]
+        assert "BLOB_WEBHOOK_PUBLIC_KEY" in wynik["hint"]
+    finally:
+        storage.reset()
+
+
+def test_the_glued_value_is_never_echoed_back(monkeypatch, tmp_path):
+    """Komunikat trafia na ekran — nie może nieść ze sobą samego tokenu."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", SKLEJONE)
+    monkeypatch.setenv("BACKTESTER_STATE_DIR", str(tmp_path))
+    storage.reset()
+    try:
+        assert TOKEN not in storage.probe()["hint"]
+    finally:
+        storage.reset()
