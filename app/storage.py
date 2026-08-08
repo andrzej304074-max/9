@@ -34,8 +34,11 @@ from typing import Optional
 from .runtime import state_dir
 
 BLOB_API = "https://blob.vercel-storage.com"
+# Nowszy klient używa innego adresu. Oba są żywe, ale nie wiadomo z góry, który obsłuży
+# dane wdrożenie — więc przy odmowie próbujemy drugiego i zapamiętujemy ten, który zadziałał.
+BLOB_API_ALT = "https://vercel.com/api/blob"
 BLOB_PREFIX = "backtester/"
-BLOB_API_VERSION = "10"
+BLOB_API_VERSION = "12"
 TIMEOUT = 10
 LISTING_TTL = 30.0      # przez tyle sekund ufamy zapamiętanej liście obiektów
 
@@ -109,20 +112,44 @@ class BlobStorage:
     name = "Vercel Blob"
     persistent = True
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, store_id: str = "") -> None:
         self._token = token
+        self._store_id = store_id
         self._urls: dict[str, str] = {}     # klucz -> publiczny adres obiektu
         self._listed_at = 0.0
         self._lock = threading.Lock()
         self.last_error = ""                # ostatnia odmowa magazynu, dla diagnostyki
+        self.api = BLOB_API                 # adres, który ostatnio zadziałał
 
     # --- niskopoziomowe wywołania ---------------------------------------------
 
     def _call(self, url: str, *, method: str = "GET", body: Optional[bytes] = None,
               headers: Optional[dict[str, str]] = None) -> Optional[bytes]:
+        odpowiedz = self._raw_call(url, method=method, body=body, headers=headers)
+        if odpowiedz is not None or not url.startswith(self.api):
+            return odpowiedz
+
+        # Odmowa pod jednym adresem API nie musi znaczyć, że magazyn nie działa — Vercel
+        # utrzymuje dwa i nie wiadomo z góry, który obsłuży to wdrożenie. Próbujemy drugiego
+        # i zapamiętujemy ten, który odpowiedział, żeby nie płacić za to przy każdym żądaniu.
+        drugi = BLOB_API_ALT if self.api == BLOB_API else BLOB_API
+        odpowiedz = self._raw_call(drugi + url[len(self.api):], method=method, body=body,
+                                   headers=headers)
+        if odpowiedz is not None:
+            self.api = drugi
+            self.last_error = ""
+        return odpowiedz
+
+    def _raw_call(self, url: str, *, method: str = "GET", body: Optional[bytes] = None,
+                  headers: Optional[dict[str, str]] = None) -> Optional[bytes]:
         request = urllib.request.Request(url, data=body, method=method)
         request.add_header("Authorization", f"Bearer {self._token}")
         request.add_header("x-api-version", BLOB_API_VERSION)
+        if self._store_id:
+            # Token OIDC nie niesie identyfikatora magazynu, więc idzie on osobno. Przy tokenie
+            # statycznym nagłówek też nie szkodzi, a ratuje przypadek, w którym identyfikatora
+            # nie da się z tokenu odczytać.
+            request.add_header("x-vercel-blob-store-id", self._store_id)
         for key, value in (headers or {}).items():
             request.add_header(key, value)
         try:
@@ -153,7 +180,7 @@ class BlobStorage:
                 return self._urls
 
         query = urllib.parse.urlencode({"prefix": BLOB_PREFIX, "limit": "1000"})
-        raw = self._call(f"{BLOB_API}?{query}")
+        raw = self._call(f"{self.api}?{query}")
         if raw is None:
             return self._urls           # zostajemy przy tym, co wiemy
 
@@ -192,7 +219,7 @@ class BlobStorage:
         # Ścieżka idzie w parametrze `pathname`, a nie jako segment adresu — to nie jest
         # kosmetyka, bo pod segmentem magazyn nie rozpoznaje żądania w ogóle.
         raw = self._call(
-            f"{BLOB_API}/?pathname={urllib.parse.quote(BLOB_PREFIX + key)}",
+            f"{self.api}/?pathname={urllib.parse.quote(BLOB_PREFIX + key)}",
             method="PUT",
             body=text.encode("utf-8"),
             headers={
@@ -222,7 +249,7 @@ class BlobStorage:
         if url is None:
             return True                  # nie ma czego kasować
         raw = self._call(
-            f"{BLOB_API}/delete",
+            f"{self.api}/delete",
             method="POST",
             body=json.dumps({"urls": [url]}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
@@ -235,8 +262,9 @@ class BlobStorage:
         return key in self._listing()
 
     def describe(self) -> dict[str, object]:
-        return {"backend": self.name, "persistent": True, "location": BLOB_API + "/" + BLOB_PREFIX,
-                "last_error": self.last_error}
+        return {"backend": self.name, "persistent": True,
+                "location": self.api + "/" + BLOB_PREFIX,
+                "store_id": self._store_id, "last_error": self.last_error}
 
 
 class FallbackStorage:
@@ -281,7 +309,7 @@ class FallbackStorage:
         return {
             "backend": self.name,
             "persistent": self.persistent,
-            "location": BLOB_API + "/" + BLOB_PREFIX,
+            "location": self.primary.api + "/" + BLOB_PREFIX,
             "degraded": self.degraded,
             "last_error": self.primary.last_error,
         }
@@ -306,6 +334,22 @@ def oczysc_token(wartosc: str) -> str:
         if nazwa.strip() and nazwa.strip().replace("_", "").isalnum():
             wartosc = reszta.strip()
     return wartosc.strip().strip('"').strip("'").strip()
+
+
+def normalizuj_id_magazynu(wartosc: str) -> str:
+    """Identyfikator bywa podawany z przedrostkiem `store_`, a w nagłówku ma go nie być."""
+    wartosc = wartosc.strip()
+    return wartosc[len("store_"):] if wartosc.startswith("store_") else wartosc
+
+
+def id_magazynu_z_tokenu(token: str) -> str:
+    """Token ma postać `vercel_blob_rw_<id magazynu>_<losowe>` — identyfikator to czwarty człon.
+
+    Bierzemy go bez wymagania dalszych członów, tak samo jak oficjalny klient: token skrócony
+    albo o nietypowej budowie ma dać to, co się da odczytać, a nie nic.
+    """
+    czlony = oczysc_token(token).split("_")
+    return czlony[3] if len(czlony) >= 4 else ""
 
 
 def sklejone_wartosci(wartosc: str) -> bool:
@@ -378,6 +422,34 @@ def token_candidates() -> list[str]:
     )
 
 
+def blob_credentials() -> tuple[str, str, str]:
+    """Czym się uwierzytelnić i do którego magazynu. Zwraca (klucz, identyfikator, skąd).
+
+    Vercel daje dwie drogi i obie są poprawne:
+
+    * **token statyczny** — powstaje przy tworzeniu magazynu, niesie identyfikator w sobie,
+    * **OIDC** — `VERCEL_OIDC_TOKEN` wystawiany automatycznie przy każdym uruchomieniu funkcji,
+      plus `BLOB_STORE_ID` z podpięcia magazynu. Identyfikator nie siedzi w tokenie, więc idzie
+      osobnym nagłówkiem.
+
+    Druga droga nie wymaga niczego wpisywanego ręcznie, więc nie da się w niej pomylić wartości
+    ani skleić dwóch w jedną. Bierzemy ją, gdy tokenu statycznego brak albo gdy nie da się z niego
+    odczytać identyfikatora — wtedy `BLOB_STORE_ID` z podpięcia jest wiarygodniejszy.
+    """
+    _, token = find_token()
+    z_tokenu = id_magazynu_z_tokenu(token) if wyglada_na_token(token) else ""
+    ze_zmiennej = normalizuj_id_magazynu(os.environ.get("BLOB_STORE_ID", ""))
+    oidc = os.environ.get("VERCEL_OIDC_TOKEN", "").strip()
+
+    if wyglada_na_token(token) and not sklejone_wartosci(token) and (z_tokenu or ze_zmiennej):
+        return oczysc_token(token), ze_zmiennej or z_tokenu, "token"
+    if oidc and ze_zmiennej:
+        return oidc, ze_zmiennej, "OIDC"
+    if wyglada_na_token(token) and z_tokenu:
+        return oczysc_token(token), z_tokenu, "token"
+    return "", "", ""
+
+
 _ACTIVE: Optional[object] = None
 _SIGNATURE: Optional[tuple[str, str]] = None
 
@@ -390,11 +462,11 @@ def active():
     w teście) zostawiałaby magazyn wskazujący na poprzednie miejsce.
     """
     global _ACTIVE, _SIGNATURE
-    _, token = find_token()
-    signature = (token[:12], str(state_dir()))
+    klucz, magazyn_id, _ = blob_credentials()
+    signature = (klucz[:12] + magazyn_id, str(state_dir()))
     if _ACTIVE is None or _SIGNATURE != signature:
         local = LocalStorage()
-        _ACTIVE = FallbackStorage(BlobStorage(token), local) if token else local
+        _ACTIVE = FallbackStorage(BlobStorage(klucz, magazyn_id), local) if klucz else local
         _SIGNATURE = signature
     return _ACTIVE
 
@@ -476,6 +548,14 @@ def _hint(ok: bool, trwaly: bool, token: bool, kandydaci: Optional[list[str]] = 
     if not ok:
         return ("Token jest, ale cykl zapis–odczyt się nie domknął. Sprawdź, czy magazyn Blob "
                 "jest podpięty do tego projektu i czy token nadal jest ważny.")
+    if not trwaly and token and "store_not_found" in blad:
+        # Identyfikator magazynu z tokenu nie odpowiada żadnemu istniejącemu magazynowi —
+        # najczęściej token pochodzi z magazynu, który został skasowany albo odtworzony.
+        return ("Magazyn o identyfikatorze z tego tokenu już nie istnieje (odpowiedź: "
+                "store_not_found). Token pochodzi zapewne ze skasowanego magazynu. Najprościej "
+                "usuń zmienną BLOB_READ_WRITE_TOKEN i zostaw samo podpięcie magazynu — "
+                "aplikacja uwierzytelni się wtedy przez OIDC, korzystając z BLOB_STORE_ID, "
+                "i nie ma tam czego wpisywać ręcznie. Po zmianie zrób Redeploy.")
     if not trwaly and token:
         return ("Zapis i odczyt działają, ale magazyn Blob nie przyjął danych — zostały tylko "
                 "na dysku instancji, czyli znikną przy uśpieniu. Token jest ustawiony, więc "

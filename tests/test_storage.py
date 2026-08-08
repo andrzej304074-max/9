@@ -38,6 +38,7 @@ class AtrapaBlob:
         self.wywolania: list[tuple[str, str]] = []
         self.zapis_dziala = True
         self.awaria = False                      # sieć całkiem odmawia
+        self.naglowki_ostatniego: dict[str, str] = {}
 
     # --- podpięcie pod urllib ---------------------------------------------------
 
@@ -48,6 +49,7 @@ class AtrapaBlob:
             raise urllib.error.URLError("sieć niedostępna")
 
         naglowki = {k.lower(): v for k, v in request.headers.items()}
+        self.naglowki_ostatniego = naglowki
         autoryzacja = naglowki.get("authorization", "")
         if not autoryzacja.startswith("Bearer ") or not autoryzacja[7:].strip():
             raise urllib.error.HTTPError(url, 403, "brak tokenu", None, None)
@@ -678,3 +680,96 @@ def test_the_glued_value_is_never_echoed_back(monkeypatch, tmp_path):
         assert TOKEN not in storage.probe()["hint"]
     finally:
         storage.reset()
+
+
+# --- uwierzytelnianie bez tokenu statycznego (OIDC) ------------------------------------------
+
+
+def test_oidc_works_without_any_static_token(monkeypatch):
+    """Droga, która nie wymaga niczego wpisywanego ręcznie.
+
+    `VERCEL_OIDC_TOKEN` wystawia Vercel przy każdym uruchomieniu funkcji, a `BLOB_STORE_ID`
+    dokłada podpięcie magazynu. Nie ma tu czego pomylić ani skleić — w odróżnieniu od tokenu
+    kopiowanego ręcznie z panelu.
+    """
+    czysto(monkeypatch)
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc_abc")
+    monkeypatch.setenv("BLOB_STORE_ID", "store_sklep123")
+
+    klucz, magazyn, skad = storage.blob_credentials()
+    assert (klucz, magazyn, skad) == ("oidc_abc", "sklep123", "OIDC")
+
+
+def test_the_store_id_prefix_is_stripped(monkeypatch):
+    """W nagłówku identyfikator idzie bez przedrostka `store_`."""
+    assert storage.normalizuj_id_magazynu("store_abc") == "abc"
+    assert storage.normalizuj_id_magazynu("abc") == "abc"
+
+
+def test_the_store_id_is_read_out_of_the_token():
+    assert storage.id_magazynu_z_tokenu("vercel_blob_rw_sklep123_LoSoWe") == "sklep123"
+    assert storage.id_magazynu_z_tokenu("cokolwiek") == ""
+
+
+def test_a_connected_store_id_wins_over_the_one_inside_the_token(monkeypatch):
+    """`BLOB_STORE_ID` pochodzi z aktualnego podpięcia, token bywa z magazynu, którego już nie ma.
+
+    Właśnie to dawało odmowę „store_not_found": token wskazywał na nieistniejący magazyn.
+    """
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_stary_LoSoWe")
+    monkeypatch.setenv("BLOB_STORE_ID", "store_biezacy")
+    assert storage.blob_credentials()[1] == "biezacy"
+
+
+def test_a_static_token_is_preferred_over_oidc(monkeypatch):
+    """Token statyczny nie wygasa, więc gdy jest poprawny, zostajemy przy nim."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_sklep_LoSoWe")
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc_abc")
+    monkeypatch.setenv("BLOB_STORE_ID", "store_sklep")
+    assert storage.blob_credentials()[2] == "token"
+
+
+def test_a_glued_token_falls_back_to_oidc(monkeypatch):
+    """Skoro token jest popsuty, a obok stoi droga bez tokenu — bierzemy ją."""
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", SKLEJONE)
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc_abc")
+    monkeypatch.setenv("BLOB_STORE_ID", "store_sklep")
+    assert storage.blob_credentials()[2] == "OIDC"
+
+
+def test_nothing_usable_means_no_credentials(monkeypatch):
+    czysto(monkeypatch)
+    monkeypatch.setenv("BLOB_STORE_ID", "store_sklep")      # sam identyfikator nie wystarczy
+    assert storage.blob_credentials() == ("", "", "")
+
+
+def test_the_store_id_travels_in_a_header(blob):
+    """Token OIDC nie niesie identyfikatora magazynu — musi iść osobno."""
+    magazyn = storage.BlobStorage("oidc_abc", "sklep123")
+    magazyn.write("a.csv", "x")
+    assert blob.naglowki_ostatniego.get("x-vercel-blob-store-id") == "sklep123"
+
+
+def test_a_deleted_store_points_at_the_oidc_route():
+    """Odmowa `store_not_found` znaczy, że token wskazuje na magazyn, którego już nie ma.
+
+    Zamiast kazać szukać kolejnego tokenu, kierujemy na drogę bez tokenu — tam nie ma
+    czego wpisywać, więc nie ma też czego pomylić.
+    """
+    odmowa = 'GET 404 Not Found — {"error":{"code":"store_not_found","message":"Store not found"}}'
+    komunikat = storage._hint(ok=True, trwaly=False, token=True, kandydaci=[], blad=odmowa)
+
+    assert "już nie istnieje" in komunikat
+    assert "OIDC" in komunikat
+    assert "BLOB_READ_WRITE_TOKEN" in komunikat
+
+
+def test_another_refusal_is_not_mistaken_for_a_deleted_store():
+    """Wskazówka o skasowanym magazynie ma pasować tylko do tej jednej odmowy."""
+    komunikat = storage._hint(ok=True, trwaly=False, token=True, kandydaci=[],
+                              blad="PUT 403 Forbidden — brak uprawnień")
+    assert "już nie istnieje" not in komunikat
+    assert "403" in komunikat

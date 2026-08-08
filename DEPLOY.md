@@ -121,25 +121,21 @@ podepnij magazyn obiektów Vercel Blob.
 3. Nadaj nazwę — dowolną, np. `backtester-dane` — i potwierdź.
 4. Na ekranie po utworzeniu wybierz **Connect Project** i wskaż projekt z backtesterem.
    Zaznacz wszystkie środowiska (*Production*, *Preview*, *Development*).
-5. **Sprawdź, czy w projekcie jest zmienna `BLOB_READ_WRITE_TOKEN`** (Settings → Environment
-   Variables). Vercel dodaje ją tylko przy **tworzeniu** magazynu z wybranym projektem.
-   Podpięcie istniejącego magazynu uwierzytelnia przez OIDC i dokłada wyłącznie `BLOB_STORE_ID`
-   oraz `BLOB_WEBHOOK_PUBLIC_KEY` — a to za mało, bo aplikacja rozmawia z API po tokenie.
+5. **Nic więcej nie wpisuj.** Podpięcie magazynu dokłada `BLOB_STORE_ID`, a Vercel wystawia
+   przy każdym uruchomieniu funkcji `VERCEL_OIDC_TOKEN` — aplikacja uwierzytelnia się tą parą
+   i nie potrzebuje żadnego tokenu kopiowanego ręcznie. To najpewniejsza droga, bo nie ma
+   w niej czego pomylić.
 
-   Jeśli tokenu nie ma, dodaj go ręcznie: **Storage → Twój magazyn → zakładka `.env.local`** →
-   skopiuj wartość `BLOB_READ_WRITE_TOKEN` → **Settings → Environment Variables** → dodaj pod
-   tą samą nazwą, zaznaczając wszystkie środowiska. (Gdyby zakładki `.env.local` nie było,
-   token wygenerujesz w sekcji **Tokens** tego magazynu.)
+   Token statyczny (`BLOB_READ_WRITE_TOKEN`) jest **opcjonalny**. Vercel dodaje go sam przy
+   *tworzeniu* magazynu; jeśli go masz, aplikacja go użyje. Wpisywanie go ręcznie ma sens tylko
+   wtedy, gdy droga bez tokenu z jakiegoś powodu nie zadziała — i wtedy uważaj, którą wartość
+   kopiujesz. Token zaczyna się od `vercel_blob_rw_`; leżący obok `BLOB_WEBHOOK_PUBLIC_KEY`
+   zaczyna się od `-----BEGIN PUBLIC KEY-----` i służy do czego innego.
 
-   **Uważaj, którą wartość kopiujesz.** Rozpoznasz token po **początku**: `vercel_blob_rw_`.
-   Koniec nie ma znaczenia — token bywa zakończony znakiem `=` i to normalne. Leżący obok
-   `BLOB_WEBHOOK_PUBLIC_KEY` zaczyna się od `-----BEGIN PUBLIC KEY-----` i służy do czego
-   innego — wklejony w to miejsce daje odmowę „Cannot get store id from token or header",
-   bo identyfikator magazynu jest zaszyty w samym tokenie. Aplikacja rozpoznaje tę pomyłkę
-   i mówi o niej wprost.
+   **Token ze skasowanego magazynu jest gorszy niż jego brak** — daje odmowę `store_not_found`
+   i przesłania działające podpięcie. Jeśli taki komunikat zobaczysz, usuń zmienną
+   `BLOB_READ_WRITE_TOKEN` i zostaw samo podpięcie.
 
-   Nazwa nie musi być dokładnie taka: przy nazwanym magazynie Vercel używa własnego przedrostka,
-   np. `MOJE_DANE_READ_WRITE_TOKEN`, i aplikacja rozpoznaje obie postacie.
 6. **Wdróż projekt ponownie.** Zmienne środowiskowe wchodzą w życie dopiero przy nowym
    wdrożeniu: zakładka **Deployments** → menu `…` przy ostatnim wdrożeniu → **Redeploy**.
 
