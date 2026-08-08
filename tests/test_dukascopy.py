@@ -1011,3 +1011,48 @@ def test_inspector_survives_a_missing_file(monkeypatch):
 
     monkeypatch.setattr(duka, "_fetch_hour", lambda url: b"")
     assert "404" in duka.inspect_candles("GBPUSD")["error"]
+
+
+def test_a_dead_sunday_does_not_condemn_the_whole_archive(tmp_path, monkeypatch):
+    """Zgłoszenie z wdrożenia: „nie udało się pobrać ani jednego pliku (3 próby)".
+
+    Niedziela ma w archiwum tylko trzy godziny — rynek otwiera się o 21:00. Trzy nieudane
+    pliki to o wiele za mało, żeby uznać archiwum za nieosiągalne, a poprzednia reguła
+    („cała doba przepadła") właśnie tak to traktowała i przerywała wieloletnie pobieranie
+    na pierwszej feralnej niedzieli.
+    """
+    import app.dukascopy as duka
+
+    niedziela = date(2016, 8, 7)
+    assert len(duka.hours_in_range(niedziela, niedziela)) == 3      # założenie testu
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwa_doba({"2016-08-07"}))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    result = duka.download_window(start=niedziela, end=date(2016, 8, 10), cache_dir=tmp_path)
+
+    assert result.skipped_days == [niedziela]
+    assert result.bars                       # poniedziałek i wtorek doszły normalnie
+
+
+def test_a_genuinely_unreachable_archive_still_stops_quickly(tmp_path, monkeypatch):
+    """Fail-fast ma nadal działać — tylko na przesłance mocniejszej niż jedna niedziela."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: None if "ticks" in url else b"")
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    with pytest.raises(DataError, match="ani jednego pliku"):
+        duka.download_window(start=date(2016, 8, 7), end=date(2016, 8, 31), cache_dir=tmp_path)
+
+
+def test_the_failure_message_counts_every_attempt(tmp_path, monkeypatch):
+    """Liczba w komunikacie ma opisywać całą próbę, a nie ostatnią dobę — inaczej brzmi
+    absurdalnie nisko i sugeruje, że aplikacja poddała się po trzech plikach."""
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: None if "ticks" in url else b"")
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    with pytest.raises(DataError) as blad:
+        duka.download_window(start=date(2016, 8, 7), end=date(2016, 8, 31), cache_dir=tmp_path)
+    assert f"{duka.MIN_PROB_AWARII}" in str(blad.value) or "prób" in str(blad.value)
+    liczba = int(str(blad.value).split(" prób")[0].split("(")[-1])
+    assert liczba >= duka.MIN_PROB_AWARII

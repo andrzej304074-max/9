@@ -46,6 +46,11 @@ RETRIES = 2
 MAX_DEAD_DAYS = 4
 DEAD_DAY_PAUSE = 1.0        # sekundy oddechu, gdyby powodem był limit żądań
 
+# Ile plików musi zawieść, zanim uznamy archiwum za nieosiągalne. Doba nie jest tu dobrą
+# miarą: niedziela ma w archiwum tylko trzy godziny (rynek otwiera się o 21:00), więc jej
+# niepowodzenie to za słaba przesłanka, żeby przerwać wieloletnie pobieranie.
+MIN_PROB_AWARII = 12
+
 # Niedzielny handel zaczyna się dopiero wieczorem — wcześniejsze pliki są zawsze puste.
 SUNDAY_OPEN_HOUR = 21
 
@@ -823,12 +828,12 @@ def download_window(
             # Doba, z której nie przyszedł ani jeden plik, znaczy co innego na początku,
             # a co innego w środku wieloletniego pobierania.
             if failed_today and failed_today == len(hours_today):
-                if result.hours_done == 0 and not tolerate_gaps:
-                    # Nic się jeszcze nie udało — archiwum jest po prostu nieosiągalne.
+                if result.hours_done == 0 and not tolerate_gaps and attempted >= MIN_PROB_AWARII:
+                    # Nic się nie udało mimo wielu prób — archiwum jest po prostu nieosiągalne.
                     # Nie ma sensu mielić kolejnych tysięcy godzin, żeby to potwierdzić.
                     raise DataError(
                         "Nie udało się pobrać z Dukascopy ani jednego pliku "
-                        f"({failed_today} prób dla dnia {day.isoformat()}). "
+                        f"({attempted} prób, ostatnio dla dnia {day.isoformat()}). "
                         "Użyj przycisku Sprawdź połączenie — powie, czy serwer w ogóle widzi "
                         "datafeed.dukascopy.com. W razie blokady wgraj plik CSV ręcznie."
                     )

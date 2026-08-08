@@ -174,7 +174,10 @@ i przesuwa kursor. Wynika z tego kilka wygodnych własności:
 Dziury w archiwum nie przerywają pracy. Pojedyncza godzina bez odpowiedzi jest liczona
 i pomijana; cała doba, z której nie przyszło nic, też — z tą różnicą, że jest raportowana
 osobno, bo to brakujący dzień handlowy, a nie drobna luka. Komunikat „nie udało się pobrać
-ani jednego pliku" pojawia się wyłącznie wtedy, gdy **nic** się nie udało od początku.
+ani jednego pliku" pojawia się wyłącznie wtedy, gdy **nic** się nie udało po kilkunastu
+próbach. Sama doba nie jest tu dobrą miarą: niedziela ma w archiwum tylko trzy godziny
+(rynek otwiera się o 21:00), więc jej niepowodzenie to za słaba przesłanka, żeby przerywać
+wieloletnie pobieranie.
 Kilka martwych dób z rzędu traktujemy jako blokadę (najczęściej chwilowy limit żądań):
 instrument kończy się z wyjaśnieniem, a to, co zdążyło przyjść, zostaje w bibliotece.
 
