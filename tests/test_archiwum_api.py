@@ -350,15 +350,73 @@ def test_a_new_plan_can_start_after_cancelling(client, siec):
 
 
 def test_a_dead_archive_is_reported_instead_of_grinding_on(client, monkeypatch):
+    """Nieosiągalne archiwum musi się skończyć błędem — ale dopiero po serii odmów,
+    a nie przy pierwszej. Pojedyncza zła doba to co innego niż awaria."""
     import app.dukascopy as duka
     monkeypatch.setattr(duka, "_fetch_hour", archiwum_atrapa(martwe=True))
 
     zacznij(client, years=1)
-    dane = client.post("/api/archive/step").json()
+    dane = dokoncz(client)
     pozycja = dane["plan"]["instruments"][0]
     assert pozycja["state"] == "error"
     assert pozycja["note"]
     assert dane["plan"]["state"] == "done"      # nie ma na czym stać w miejscu
+
+
+def test_one_refused_day_does_not_kill_the_instrument(client, monkeypatch):
+    """Zgłoszenie z wdrożenia: pobieranie przewracało się na jednej dobie i zostawiało
+    instrument w stanie błędu na zawsze — łącznie z komunikatem zapisanym w planie.
+
+    Archiwum bywa niedostępne przez jedną dobę i to normalne. Taka doba ma zostać pominięta,
+    a reszta zakresu pobrana.
+    """
+    library = sys.modules["app.library"]
+    import app.dukascopy as duka
+
+    dziala = archiwum_atrapa()
+
+    def kapryśne(url: str):
+        # 3 stycznia archiwum odmawia całkowicie — również dla plików ze świecami
+        return None if "/2024/00/03/" in url else dziala(url)
+
+    monkeypatch.setattr(duka, "_fetch_hour", kapryśne)
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+    zacznij(client, years=1)
+    dane = dokoncz(client)
+
+    pozycja = dane["plan"]["instruments"][0]
+    assert pozycja["state"] == "done"
+    assert pozycja["skipped_days"] >= 1
+    assert library.entries()[0]["bars"] > 0
+    # Notatka mówi o ominiętej dobie, a nie o awarii pobierania — surowy komunikat błędu
+    # zostaje wyczyszczony, gdy dane znów popłyną.
+    assert "Pominięto 1 dobę" in pozycja["note"]
+    assert "ani jednego pliku" not in pozycja["note"]
+
+
+def test_a_weekend_at_the_end_of_the_range_is_not_a_failure(client, monkeypatch):
+    """Zakres kończący się w sobotę nie ma na końcu ani jednej godziny handlu. Archiwum
+    odmawia takiego okna, ale to koniec roboty, a nie awaria — instrument ma się domknąć
+    z kompletnym licznikiem dni, bez ani jednej „pominiętej" doby.
+    """
+    archiwum = sys.modules["app.archiwum"]
+    import app.dukascopy as duka
+
+    monkeypatch.setattr(duka, "_fetch_hour", archiwum_atrapa())
+    # 6 stycznia 2024 to sobota — ostatni dzień zakresu nie ma godzin handlowych.
+    monkeypatch.setattr(archiwum, "zakres_lat",
+                        lambda lata: (date(2024, 1, 1), date(2024, 1, 6)))
+
+    zacznij(client, years=1)
+    dane = dokoncz(client)
+
+    pozycja = dane["plan"]["instruments"][0]
+    assert pozycja["state"] == "done"
+    assert pozycja["skipped_days"] == 0
+    assert not pozycja["note"]
+    assert pozycja["days_done"] == pozycja["days_total"]     # pasek dochodzi do 100%
+    assert dane["progress"]["days_done"] == dane["progress"]["days_total"]
 
 
 def martwe_doby(martwe: set[str]):
@@ -394,7 +452,7 @@ def test_a_dead_day_in_the_middle_does_not_kill_the_instrument(client, monkeypat
     pozycja = dane["plan"]["instruments"][0]
     assert pozycja["state"] == "done"
     assert pozycja["skipped_days"] == 1
-    assert "Pominięto 1 dób" in pozycja["note"]
+    assert "Pominięto 1 dobę" in pozycja["note"]
     assert library.entries()[0]["bars"] > 0
 
 

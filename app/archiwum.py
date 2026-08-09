@@ -37,6 +37,10 @@ INTERWALY = (1, 5, 15, 30, 60)
 # i kończymy instrument zamiast mielić przez lata na pusto.
 MAX_BEZOWOCNYCH = 3
 
+# Ile odmów archiwum pod rząd wolno ominąć, zanim uznamy instrument za nieudany. Pojedyncza
+# zła doba nie może przekreślać dziesięciu lat historii — dopiero seria znaczy realną awarię.
+MAX_ODMOW = 8
+
 
 # --- zakres i oszacowanie ------------------------------------------------------------
 
@@ -140,6 +144,7 @@ def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict
                 "failed_hours": 0,
                 "skipped_days": 0,      # doby, z których nie przyszło nic — dziury w danych
                 "bezowocne": 0,         # odcinki z rzędu bez ani jednej świecy
+                "odmowy": 0,            # odmowy archiwum z rzędu, każda pomija jedną dobę
                 "dataset_id": None,
                 "note": "",
             }
@@ -228,6 +233,13 @@ def _kawalek(plan: dict[str, Any], pozycja: dict[str, Any], koniec_budzetu: floa
         _domknij(plan, pozycja)
         return
 
+    if not hours_in_range(kursor, koniec):
+        # Ogon zakresu bez ani jednej godziny handlu — najczęściej sama sobota na końcu.
+        # Archiwum odmówiłoby takiego okna, a to nie jest awaria, tylko koniec roboty.
+        pozycja["cursor"] = (koniec + timedelta(days=1)).isoformat()
+        _domknij(plan, pozycja)
+        return
+
     pozycja["state"] = "running"
     try:
         wynik = download_window(
@@ -243,9 +255,21 @@ def _kawalek(plan: dict[str, Any], pozycja: dict[str, Any], koniec_budzetu: floa
             tolerate_gaps=pozycja["bars"] > 0,
         )
     except DataError as exc:
-        # Archiwum nie odpowiada — nie ma sensu mielić dalej tego instrumentu.
-        pozycja["state"] = "error"
+        # Odmowa archiwum nie może przekreślać instrumentu przy pierwszym potknięciu. Dopiero
+        # seria takich odmów pod rząd znaczy, że dalsze próby to mielenie na pusto; pojedyncza
+        # to zła doba, którą trzeba ominąć i iść dalej. Zdarza się to naprawdę — bywają dni,
+        # z których archiwum nie oddaje nic, a reszta zakresu jest w porządku.
+        pozycja["odmowy"] = pozycja.get("odmowy", 0) + 1
         pozycja["note"] = str(exc)
+        if pozycja["odmowy"] >= MAX_ODMOW:
+            pozycja["state"] = "error"
+            return
+
+        pozycja["skipped_days"] = pozycja.get("skipped_days", 0) + 1
+        pozycja["days_done"] += 1
+        pozycja["cursor"] = (kursor + timedelta(days=1)).isoformat()
+        if date.fromisoformat(pozycja["cursor"]) > koniec:
+            _domknij(plan, pozycja)
         return
 
     if wynik.bars:
@@ -271,6 +295,10 @@ def _kawalek(plan: dict[str, Any], pozycja: dict[str, Any], koniec_budzetu: floa
             return
     elif wynik.bars:
         pozycja["bezowocne"] = 0
+        pozycja["odmowy"] = 0
+        # Notatka opisywała ominiętą dobę. Skoro dane znów płyną, przestała być prawdziwa —
+        # inaczej instrument skończyłby jako „gotowe” z komunikatem o błędzie obok.
+        pozycja["note"] = ""
 
     if wynik.covered_to is None:
         # Budżet skończył się, zanim domknął się choćby jeden dzień. Nic nie tracimy —
@@ -288,13 +316,19 @@ def _kawalek(plan: dict[str, Any], pozycja: dict[str, Any], koniec_budzetu: floa
 
 def _domknij(plan: dict[str, Any], pozycja: dict[str, Any]) -> None:
     """Skleja kawałki w jeden zbiór, zapisuje go w bibliotece i sprząta po sobie."""
+    # Instrument doszedł do końca swojego zakresu, więc licznik dni ma pokazywać komplet —
+    # dni bez notowań na końcu okresu nie mogą zostawiać paska postępu na 97%.
+    pozycja["days_done"] = pozycja["days_total"]
+
     magazyn = storage.active()
     czesci = [magazyn.read(_klucz_kawalka(plan["id"], pozycja["code"], n))
               for n in range(1, pozycja["parts"] + 1)]
     wiersze = "".join(c for c in czesci if c)
 
     if not wiersze.strip():
-        pozycja["state"] = "empty"
+        # Pusty okres i okres, z którego archiwum nic nie oddało, wyglądają tak samo w danych,
+        # a znaczą co innego. Odmowy odnotowane po drodze rozstrzygają, o który przypadek chodzi.
+        pozycja["state"] = "error" if pozycja.get("odmowy") else "empty"
         pozycja["note"] = pozycja["note"] or "Brak danych w tym okresie."
         _sprzataj_pozycje(plan, pozycja)
         return
@@ -332,11 +366,24 @@ def _uwaga_o_dziurach(pozycja: dict[str, Any]) -> str:
     """
     pominiete, godziny = pozycja.get("skipped_days", 0), pozycja.get("failed_hours", 0)
     if pominiete:
-        return (f"Pominięto {pominiete} dób, z których archiwum nie oddało nic — te dni nie "
-                "wejdą do backtestu. Powtórz pobranie, żeby je uzupełnić.")
+        jedna = pominiete == 1
+        return (f"Pominięto {pominiete} {_odmiana(pominiete, 'dobę', 'doby', 'dób')} — archiwum "
+                f"nie oddało z {'niej' if jedna else 'nich'} nic i "
+                f"{'ten dzień nie wejdzie' if jedna else 'te dni nie wejdą'} do backtestu. "
+                "Powtórz pobranie, żeby uzupełnić braki.")
     if godziny:
-        return f"{godziny} godzin nie udało się pobrać — reszta jest kompletna."
+        return (f"Nie udało się pobrać {godziny} "
+                f"{'godziny' if godziny == 1 else 'godzin'} — reszta jest kompletna.")
     return ""
+
+
+def _odmiana(ile: int, jeden: str, kilka: str, wiele: str) -> str:
+    """Polska odmiana rzeczownika po liczbie: 1 dobę, 2 doby, 5 dób, 12 dób, 22 doby."""
+    if ile == 1:
+        return jeden
+    if 2 <= ile % 10 <= 4 and not 12 <= ile % 100 <= 14:
+        return kilka
+    return wiele
 
 
 def _klucz_kawalka(plan_id: str, kod: str, numer: int) -> str:

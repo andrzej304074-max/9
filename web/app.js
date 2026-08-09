@@ -58,6 +58,13 @@ function signed(value, formatter, suffix = '') {
   return sign + formatter.format(Math.abs(value)) + suffix;
 }
 
+// Polska odmiana rzeczownika po liczbie: 1 doba, 2 doby, 5 dób, 12 dób, 22 doby.
+function odmiana(ile, jeden, kilka, wiele) {
+  if (ile === 1) return jeden;
+  const dziesiatki = ile % 100;
+  return (ile % 10 >= 2 && ile % 10 <= 4 && !(dziesiatki >= 12 && dziesiatki <= 14)) ? kilka : wiele;
+}
+
 function plainOrDash(value, formatter, suffix = '') {
   if (value === null || value === undefined || Number.isNaN(value)) return '—';
   return formatter.format(value) + suffix;
@@ -889,11 +896,12 @@ async function downloadInChunks(body) {
     // ma prawo wiedzieć, że w danych są dziury. Pominięta doba waży więcej niż godzina:
     // to cały brakujący dzień handlowy, którego w backteście po prostu nie ma.
     if (skipped) {
-      setStatus(`Uwaga: ${skipped} dób archiwum nie oddało w całości — tych dni nie ma `
-        + 'w danych i nie wejdą do backtestu. Powtórzenie pobrania je uzupełni '
-        + '(reszta jest już w pamięci podręcznej, więc pójdzie szybko).');
+      setStatus(`Uwaga: ${skipped} ${odmiana(skipped, 'doby', 'dób', 'dób')} archiwum nie oddało `
+        + 'w całości — tych dni nie ma w danych i nie wejdą do backtestu. Powtórzenie pobrania '
+        + 'je uzupełni (reszta jest już w pamięci podręcznej, więc pójdzie szybko).');
     } else if (failed) {
-      setStatus(`Uwaga: ${failed} godzin nie udało się pobrać mimo ponowień — w danych `
+      setStatus(`Uwaga: ${failed} ${odmiana(failed, 'godziny', 'godzin', 'godzin')} `
+        + `nie udało się pobrać mimo ponowień — w danych `
         + 'mogą być drobne luki. Powtórzenie pobrania uzupełni brakujące godziny '
         + '(reszta jest już w pamięci podręcznej, więc pójdzie szybko).');
     }
@@ -1310,6 +1318,19 @@ function renderArchive(dane) {
     + `${Number(postep.days_done).toLocaleString('pl-PL')} z `
     + `${Number(postep.days_total).toLocaleString('pl-PL')} dni${zostalo}`;
 
+  // Zakończony plan zostaje na ekranie razem z komunikatami — łatwo wziąć je za świeżą awarię.
+  // Mówimy więc wprost, że to zapis poprzedniego podejścia i że powtórka jest o jedno kliknięcie.
+  const zakonczony = plan.state !== 'running';
+  const nieudane = (plan.instruments || []).filter((p) => p.state === 'error').length;
+  $('archive-note').hidden = !(zakonczony && nieudane);
+  if (zakonczony && nieudane) {
+    $('archive-note').textContent = `Poprzednie pobranie zakończyło się błędem na `
+      + `${nieudane} ${nieudane === 1 ? 'instrumencie' : 'instrumentach'} — poniżej jego zapis, `
+      + 'nie bieżący stan. Kliknij „Pobierz do biblioteki”, żeby spróbować ponownie: '
+      + 'ściągnięte godziny są w pamięci podręcznej, więc powtórka szybko dojdzie do miejsca, '
+      + 'w którym stanęła.';
+  }
+
   const przerwane = plan.state === 'cancelled';
   $('archive-body').innerHTML = (plan.instruments || []).map((p) => {
     const udzial = p.days_total ? Math.round((p.days_done / p.days_total) * 100) : 0;
@@ -1320,7 +1341,8 @@ function renderArchive(dane) {
       <td>${escapeHtml(p.label)}</td>
       <td class="num">${udzial}%</td>
       <td class="num">${p.bars ? Number(p.bars).toLocaleString('pl-PL') : '—'}${
-        p.skipped_days ? `<span class="hint-limit"> · −${p.skipped_days} dób</span>` : ''}</td>
+        p.skipped_days ? `<span class="hint-limit"> · −${p.skipped_days} `
+          + `${odmiana(p.skipped_days, 'doba', 'doby', 'dób')}</span>` : ''}</td>
       <td>${escapeHtml(stan)}${p.note ? ` — ${escapeHtml(p.note)}` : ''}</td>
     </tr>`;
   }).join('');

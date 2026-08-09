@@ -181,6 +181,13 @@ wieloletnie pobieranie.
 Kilka martwych dób z rzędu traktujemy jako blokadę (najczęściej chwilowy limit żądań):
 instrument kończy się z wyjaśnieniem, a to, co zdążyło przyjść, zostaje w bibliotece.
 
+Odmowa archiwum na jednej dobie też nie kończy instrumentu — taka doba jest pomijana,
+kursor idzie dalej, a dopiero **ósma odmowa z rzędu** uznaje pobieranie za nieudane. Dzięki
+temu jeden zły dzień w środku dziesięciu lat nie przekreśla całej reszty. Zakończony plan
+zostaje na ekranie razem z komunikatami, więc panel mówi wprost, że to **zapis poprzedniego
+podejścia**, a nie bieżący stan — powtórne kliknięcie „Pobierz do biblioteki" zaczyna nowy
+plan i dzięki pamięci podręcznej szybko dochodzi do miejsca, w którym stanęło poprzednie.
+
 Dopiero domknięty instrument trafia do biblioteki jako jeden gotowy zbiór; niedokończone
 kawałki są tylko rusztowaniem i znikają po sklejeniu.
 
