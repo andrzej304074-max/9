@@ -809,7 +809,10 @@ async function probeDukascopy() {
           ? `Archiwum udostępnia też gotowe świece minutowe (zgodne z tickami na ${c.compared} minutach) `
             + '— pobieranie użyje ich i będzie około 24 razy szybsze.'
           : `Gotowe świece niedostępne (${c.reason || 'brak informacji'}), pobieranie pójdzie z ticków.`);
-      setStatus('Archiwum Dukascopy jest osiągalne z serwera.', 'ok');
+      setStatus(r.attempts > 1
+        ? `Archiwum Dukascopy jest osiągalne — odpowiedziało dopiero za ${r.attempts}. razem, `
+          + 'więc bywa chwilowo przeciążone.'
+        : 'Archiwum Dukascopy jest osiągalne z serwera.', 'ok');
     } else {
       out.textContent = `${r.error} Adres testowy: ${r.url}`;
       out.classList.add('hint-limit');

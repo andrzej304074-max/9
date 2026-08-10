@@ -60,6 +60,12 @@ STATUSY_LIMITU = (429, 503, 502, 504)
 HAMULEC_MAX = 8.0           # najdłuższa pauza, jaką hamulec potrafi nałożyć
 MIN_WORKERS = 2             # poniżej tego nie schodzimy, bo pobieranie stanęłoby w miejscu
 
+# Diagnostyka połączenia ponawia próbę, gdy archiwum odpowiada „spróbuj później". Jedno
+# 503 to za słaba przesłanka na werdykt: albo minie samo, albo powtórzy się przy każdej
+# próbie — i dopiero to drugie coś znaczy.
+PROBY_DIAGNOZY = 3
+PRZERWY_DIAGNOZY = (1.0, 2.5)
+
 # Po tylu dobach z rzędu bez ani jednego pliku uznajemy, że to nie dziura w archiwum,
 # tylko blokada — i oddajemy sterowanie zamiast mielić resztę zakresu na pusto.
 MAX_DEAD_DAYS = 4
@@ -631,37 +637,60 @@ def probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, object]:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     started = time.monotonic()
 
-    try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            payload = response.read()
-        elapsed = round((time.monotonic() - started) * 1000)
+    for numer in range(PROBY_DIAGNOZY):
         try:
-            ticks = len(decode_bi5(payload, when, instrument_scale(instrument)))
-        except DataError as exc:
-            return {"ok": False, "url": url, "ms": elapsed, "bytes": len(payload),
-                    "error": f"Plik pobrany, ale nie daje się rozpakować: {exc}"}
-        # Skoro połączenie działa, od razu sprawdzamy, czy da się użyć szybszej ścieżki.
-        candles = verify_candles(instrument)
-        return {
-            "ok": ticks > 0,
-            "url": url,
-            "ms": elapsed,
-            "bytes": len(payload),
-            "ticks": ticks,
-            "candles": {"usable": candles.usable, "reason": candles.reason,
-                        "compared": candles.compared, "scaled": candles.scaled},
-            "error": None if ticks else "Plik pobrany, ale pusty — archiwum odpowiada inaczej niż zwykle.",
-        }
-    except urllib.error.HTTPError as exc:
-        return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
-                "status": exc.code,
-                "error": f"Archiwum odpowiedziało kodem HTTP {exc.code}."
-                         + (" Ten adres powinien istnieć, więc prawdopodobnie dostawca blokuje "
-                            "ruch z tego serwera." if exc.code in (403, 429) else "")}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
-                "error": f"Brak połączenia z archiwum ({exc}). "
-                         "Środowisko może blokować ruch wychodzący do datafeed.dukascopy.com."}
+            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+                payload = response.read()
+            elapsed = round((time.monotonic() - started) * 1000)
+            try:
+                ticks = len(decode_bi5(payload, when, instrument_scale(instrument)))
+            except DataError as exc:
+                return {"ok": False, "url": url, "ms": elapsed, "bytes": len(payload),
+                        "attempts": numer + 1,
+                        "error": f"Plik pobrany, ale nie daje się rozpakować: {exc}"}
+            # Skoro połączenie działa, od razu sprawdzamy, czy da się użyć szybszej ścieżki.
+            candles = verify_candles(instrument)
+            return {
+                "ok": ticks > 0,
+                "url": url,
+                "ms": elapsed,
+                "bytes": len(payload),
+                "ticks": ticks,
+                "attempts": numer + 1,
+                "candles": {"usable": candles.usable, "reason": candles.reason,
+                            "compared": candles.compared, "scaled": candles.scaled},
+                "error": None if ticks else "Plik pobrany, ale pusty — archiwum odpowiada inaczej niż zwykle.",
+            }
+        except urllib.error.HTTPError as exc:
+            # „Chwilowo niedostępne" bierzemy na słowo i sprawdzamy, czy naprawdę mija.
+            if exc.code in STATUSY_LIMITU and numer < PROBY_DIAGNOZY - 1:
+                time.sleep(PRZERWY_DIAGNOZY[min(numer, len(PRZERWY_DIAGNOZY) - 1)])
+                continue
+            return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
+                    "status": exc.code, "attempts": numer + 1,
+                    "error": _opis_diagnozy(exc.code, numer + 1)}
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
+                    "attempts": numer + 1,
+                    "error": f"Brak połączenia z archiwum ({exc}). "
+                             "Środowisko może blokować ruch wychodzący do datafeed.dukascopy.com."}
+
+    return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
+            "attempts": PROBY_DIAGNOZY, "error": "Archiwum nie odpowiedziało."}
+
+
+def _opis_diagnozy(kod: int, prob: int) -> str:
+    """Werdykt diagnostyki: co odpowiedziało archiwum i co z tym zrobić.
+
+    Rady bierzemy z tej samej tabeli co komunikat o nieudanym pobieraniu — inaczej te dwa
+    miejsca zaczęłyby mówić różnymi głosami o tej samej sytuacji.
+    """
+    ile = "" if prob == 1 else f" przy każdej z {prob} prób"
+    rada = next((tekst for fragment, tekst in RADY if fragment in f"HTTP {kod}"), "")
+    if not rada and kod in (403, 429):
+        rada = ("Ten adres powinien istnieć, więc prawdopodobnie dostawca blokuje ruch "
+                "z tego serwera.")
+    return f"Archiwum odpowiedziało kodem HTTP {kod}{ile}." + (f" {rada}" if rada else "")
 
 
 def hours_in_range(start: date, end: date) -> list[datetime]:
@@ -1044,6 +1073,11 @@ RADY = (
     ("HTTP 403", "Archiwum odmawia dostępu temu serwerowi. Z wdrożenia bezserwerowego zdarza "
                  "się to przy blokadzie całych zakresów adresów — pobierz dane lokalnie "
                  "(tools/pobierz_archiwum.py) i wgraj plik CSV."),
+    ("HTTP 503", "To znaczy „chwilowo niedostępne”: przeciążenie albo przerwa techniczna po "
+                 "stronie Dukascopy. Odczekaj kilkanaście minut i spróbuj ponownie — pobrane "
+                 "godziny zostają w pamięci podręcznej. Jeśli 503 utrzymuje się godzinami, "
+                 "to zwykle blokada ruchu z serwerowni pod postacią awarii: pobierz dane "
+                 "lokalnie (tools/pobierz_archiwum.py) i wgraj plik CSV."),
     ("HTTP 5", "Archiwum ma awarię po swojej stronie. Spróbuj ponownie za jakiś czas."),
     ("przekroczony czas", "Serwer archiwum nie zdążył odpowiedzieć. Najczęściej to przeciążenie "
                           "po jego stronie albo wolne łącze wdrożenia — ponów za kilka minut."),

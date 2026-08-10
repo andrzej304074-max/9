@@ -580,7 +580,11 @@ def test_probe_flags_a_provider_block(monkeypatch):
 
     assert r["ok"] is False
     assert r["status"] == 403
-    assert "blokuje" in r["error"]
+    assert "blokad" in r["error"]
+    # Blokada nie mija sama, więc dobijanie się nie ma sensu — werdykt zapada od razu.
+    assert r["attempts"] == 1
+    # Rada ma być ta sama co przy nieudanym pobieraniu, nie inna wersja tej samej historii.
+    assert "pobierz_archiwum" in r["error"]
 
 
 def test_probe_never_raises(monkeypatch):
@@ -1341,3 +1345,64 @@ def test_a_rate_limited_archive_is_survived_by_slowing_down(tmp_path, monkeypatc
     assert pula.odmowy                                # limit naprawdę się odezwał
     assert duka.HAMULEC.rownolegle() < duka.MAX_WORKERS   # strumień faktycznie się zwęził
     duka.HAMULEC.zapomnij()
+
+
+# --- diagnostyka wobec „chwilowo niedostępne" ------------------------------------------
+
+
+def test_a_transient_503_is_not_a_verdict(monkeypatch):
+    """Zgłoszenie z wdrożenia: „Archiwum odpowiedziało kodem HTTP 503". 503 znaczy dosłownie
+    „spróbuj później", więc jedna próba to za mało, żeby cokolwiek orzec — druga potrafi
+    przejść i wtedy nie ma o czym mówić.
+    """
+    import app.dukascopy as duka
+
+    payload = make_bi5([(0, 126_350, 126_340)])
+    ile = {"n": 0}
+
+    def kapryśne(*a, **k):
+        ile["n"] += 1
+        if ile["n"] == 1:
+            raise duka.urllib.error.HTTPError("u", 503, "Service Unavailable", {}, None)
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", kapryśne)
+    monkeypatch.setattr(duka, "PRZERWY_DIAGNOZY", (0, 0))
+    monkeypatch.setattr(duka, "verify_candles", lambda *a, **k: duka.CandleSupport())
+
+    r = duka.probe()
+    assert r["ok"] is True
+    assert r["attempts"] == 2
+
+
+def test_a_persistent_503_says_what_it_means_and_what_to_do(monkeypatch):
+    """Gdy 503 wraca przy każdej próbie, werdykt ma nazwać rzecz po imieniu i podpowiedzieć
+    wyjście — samo „kod HTTP 503" nie daje się na nic zamienić."""
+    import app.dukascopy as duka
+
+    def niedostepne(*a, **k):
+        raise duka.urllib.error.HTTPError("u", 503, "Service Unavailable", {}, None)
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", niedostepne)
+    monkeypatch.setattr(duka, "PRZERWY_DIAGNOZY", (0, 0))
+
+    r = duka.probe()
+    assert r["ok"] is False
+    assert r["status"] == 503
+    assert r["attempts"] == duka.PROBY_DIAGNOZY
+    assert f"{duka.PROBY_DIAGNOZY} prób" in r["error"]      # ile razy pytaliśmy
+    assert "chwilowo niedostępne" in r["error"]             # co ten kod znaczy
+    assert "pobierz_archiwum" in r["error"]                 # co zrobić, gdy nie mija
+
+
+def test_a_dead_connection_is_not_retried(monkeypatch):
+    """Brak łącza nie mija między próbami — dobijanie się tylko przeciąga diagnostykę."""
+    import app.dukascopy as duka
+
+    def boom(*a, **k):
+        raise duka.urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", boom)
+    r = duka.probe()
+    assert r["ok"] is False
+    assert r["attempts"] == 1
