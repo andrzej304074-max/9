@@ -218,8 +218,8 @@ function wireEvents() {
   $('btn-archive-resume').addEventListener('click', resumeArchiveLoop);
   $('archive_price').addEventListener('change', persistArchiveChoice);
   ['archive_years', 'archive_interval'].forEach((id) => {
-    $(id).addEventListener('change', () => { persistArchiveChoice(); refreshArchiveEstimate(); });
-    $(id).addEventListener('input', refreshArchiveEstimate);
+    $(id).addEventListener('change', () => { persistArchiveChoice(); scheduleArchiveEstimate(); });
+    $(id).addEventListener('input', scheduleArchiveEstimate);
   });
   $('archive-panel').addEventListener('toggle', () => {
     if ($('archive-panel').open) refreshArchiveEstimate();
@@ -1193,7 +1193,7 @@ function buildArchiveInstruments(instruments) {
     input.value = code;
     input.className = 'archive-instrument';
     input.checked = zapamietane.instruments ? zapamietane.instruments.includes(code) : true;
-    input.addEventListener('change', () => { persistArchiveChoice(); refreshArchiveEstimate(); });
+    input.addEventListener('change', () => { persistArchiveChoice(); scheduleArchiveEstimate(); });
     wrap.append(input, document.createTextNode(label));
     host.append(wrap);
   });
@@ -1232,7 +1232,20 @@ function persistArchiveChoice() {
   }
 }
 
+// Numer ostatniego pytania o oszacowanie. Każda zmiana pola wysyła osobne żądanie, a te
+// wracają w dowolnej kolejności — bez tego licznika odpowiedź na nieaktualne pytanie
+// nadpisywała świeższą i linijka pokazywała coś innego, niż stało w formularzu.
+let szacunekNr = 0;
+let szacunekTimer = null;
+
+/** Wpisywanie „10" to trzy zdarzenia i trzy żądania — czekamy, aż palce znieruchomieją. */
+function scheduleArchiveEstimate() {
+  clearTimeout(szacunekTimer);
+  szacunekTimer = setTimeout(refreshArchiveEstimate, 250);
+}
+
 async function refreshArchiveEstimate() {
+  const nr = (szacunekNr += 1);
   const wybor = archiveChoice();
   const out = $('archive-estimate');
   if (!wybor.instruments.length) {
@@ -1247,6 +1260,7 @@ async function refreshArchiveEstimate() {
   } catch {
     return;                      // oszacowanie to podpowiedź, jego brak nie blokuje pobierania
   }
+  if (nr !== szacunekNr) return;   // formularz zdążył się zmienić — ta odpowiedź jest już nieaktualna
   // Prędkości łącza nie da się zgadnąć, więc czas podajemy widełkami zamiast udawać precyzję.
   out.textContent = `${e.date_from} → ${e.date_to} · `
     + `${e.instruments} ${e.instruments === 1 ? 'instrument' : 'instrumentów'} · `
