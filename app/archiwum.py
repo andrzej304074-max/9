@@ -33,6 +33,17 @@ PIERWSZY_ROK = 2003          # tak głęboko sięga archiwum Dukascopy
 MAX_LAT = 25
 INTERWALY = (1, 5, 15, 30, 60)
 
+# Numer wersji zasad pobierania. Plan leży w magazynie i przeżywa wdrożenia, więc potrafi
+# pochodzić z kodu, który uznawał za awarię coś, co dziś jest zwykłą dziurą — a jego notatka
+# o błędzie wygląda na ekranie identycznie jak świeża awaria. Po podbiciu numeru nieudane
+# instrumenty ze starego planu dostają drugą szansę wedle nowych zasad. Podbij go zawsze,
+# gdy zmieniasz to, co kończy instrument błędem.
+WERSJA_PLANU = 2
+
+# Plan „w trakcie", którego nikt nie ruszył od tylu sekund, jest porzucony: przeglądarka
+# zamknięta w połowie nie może blokować kolejnego pobierania na zawsze.
+PORZUCONY_PO = 900.0
+
 # Po tylu odcinkach z rzędu bez ani jednej świecy uznajemy, że archiwum nas blokuje,
 # i kończymy instrument zamiast mielić przez lata na pusto.
 MAX_BEZOWOCNYCH = 3
@@ -93,7 +104,32 @@ def stan() -> Optional[dict[str, Any]]:
         plan = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    return plan if isinstance(plan, dict) and plan.get("instruments") else None
+    if not (isinstance(plan, dict) and plan.get("instruments")):
+        return None
+    return _po_wdrozeniu(plan)
+
+
+def _po_wdrozeniu(plan: dict[str, Any]) -> dict[str, Any]:
+    """Daje drugą szansę instrumentom, które poległy na zasadach starszych niż obecny kod.
+
+    Plan przeżywa wdrożenie, a jego notatka o błędzie — nie. Zapisane „nie udało się pobrać
+    ani jednego pliku" pochodzi z kodu, który przerywał po trzech nieudanych plikach, więc
+    ginął na niedzieli: ma w archiwum tylko trzy godziny. Nowy kod tak nie robi, ale sam
+    z siebie nie tknąłby zapisanego wyniku — użytkownik do końca świata widziałby awarię,
+    której już nie ma. Wznawiamy więc takie instrumenty od ich kursora i pobieranie samo
+    rusza dalej po odświeżeniu strony.
+    """
+    if plan.get("wersja") == WERSJA_PLANU:
+        return plan
+
+    nieudane = [p for p in plan["instruments"] if p.get("state") == "error"]
+    for pozycja in nieudane:
+        _wznow_pozycje(plan, pozycja)
+    plan["wersja"] = WERSJA_PLANU
+    if nieudane and plan.get("state") == "done":
+        plan["state"] = "running"       # przerwane plany zostawiamy przerwanymi
+    _zapisz(plan)
+    return plan
 
 
 def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict[str, Any]:
@@ -113,7 +149,7 @@ def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict
         raise DataError("Cena musi być jedną z: bid, ask, mid.")
 
     poprzedni = stan()
-    if poprzedni and poprzedni.get("state") == "running":
+    if poprzedni and poprzedni.get("state") == "running" and not _porzucony(poprzedni):
         raise DataError("Pobieranie archiwum już trwa. Przerwij je albo poczekaj na koniec.")
     if poprzedni:
         _sprzataj(poprzedni)
@@ -126,6 +162,7 @@ def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict
         "interval_minutes": interwal,
         "price": cena,
         "years": lata,
+        "wersja": WERSJA_PLANU,
         "date_from": poczatek.isoformat(),
         "date_to": koniec.isoformat(),
         "started_at": time.time(),
@@ -155,6 +192,16 @@ def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict
     return plan
 
 
+def _porzucony(plan: dict[str, Any]) -> bool:
+    """Czy plan „w trakcie" ma jeszcze kogoś, kto go posuwa.
+
+    Kroki idą z przeglądarki, jeden po drugim. Karta zamknięta w połowie zostawia plan
+    w stanie „running" na zawsze — a wtedy przycisk startu odmawiałby bez końca. Milczenie
+    dłuższe niż kilkanaście minut znaczy, że nikt tego planu już nie prowadzi.
+    """
+    return time.time() - float(plan.get("updated_at") or 0) > PORZUCONY_PO
+
+
 def przerwij() -> Optional[dict[str, Any]]:
     """Zatrzymuje plan i sprząta niedokończone kawałki. Instrumenty domknięte wcześniej
     zostają w bibliotece — przerwanie nie odbiera tego, co już się udało."""
@@ -166,6 +213,46 @@ def przerwij() -> Optional[dict[str, Any]]:
     _sprzataj(plan)
     _zapisz(plan)
     return plan
+
+
+def ponow() -> dict[str, Any]:
+    """Wznawia instrumenty, które skończyły się błędem, nie ruszając tych udanych.
+
+    Powtórka nie zaczyna od zera: kursor pamięta pierwszy niepobrany dzień, a ściągnięte
+    godziny siedzą w pamięci podręcznej, więc dochodzi do miejsca awarii szybko. Od nowa
+    rusza tylko instrument, który przeszedł cały zakres bez ani jednej świecy — tam nie ma
+    czego wznawiać.
+    """
+    plan = stan()
+    if plan is None:
+        raise DataError("Nie ma planu do ponowienia.")
+    if plan.get("state") == "running":
+        raise DataError("Pobieranie archiwum już trwa.")
+
+    nieudane = [p for p in plan["instruments"] if p.get("state") == "error"]
+    if not nieudane:
+        raise DataError("W planie nie ma nieudanych instrumentów.")
+
+    for pozycja in nieudane:
+        _wznow_pozycje(plan, pozycja)
+    plan["state"] = "running"
+    _zapisz(plan)
+    return plan
+
+
+def _wznow_pozycje(plan: dict[str, Any], pozycja: dict[str, Any]) -> None:
+    """Kasuje ślad po nieudanej próbie i ustawia instrument z powrotem do kolejki."""
+    pozycja["state"] = "pending"
+    pozycja["note"] = ""
+    pozycja["odmowy"] = 0
+    pozycja["bezowocne"] = 0
+
+    if date.fromisoformat(pozycja["cursor"]) > date.fromisoformat(plan["date_to"]):
+        # Instrument przeszedł cały zakres i nic z niego nie wyszło — wznawianie od kursora
+        # nie miałoby czego pobrać, więc zaczynamy od początku.
+        _sprzataj_pozycje(plan, pozycja)
+        pozycja.update(cursor=plan["date_from"], days_done=0, bars=0,
+                       failed_hours=0, skipped_days=0)
 
 
 def zapomnij() -> None:

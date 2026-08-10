@@ -493,6 +493,160 @@ def test_a_dead_archive_leaves_the_library_empty(client, monkeypatch):
     assert library.entries() == []
 
 
+# --- powtórka po nieudanym podejściu ---------------------------------------------------
+
+
+def zepsuj_plan(client, wersja=None):
+    """Plan z jednym instrumentem w stanie błędu, tak jak zostawiłby go starszy kod."""
+    import json
+
+    storage = sys.modules["app.storage"]
+    archiwum = sys.modules["app.archiwum"]
+
+    plan = json.loads(storage.active().read(archiwum.PLAN_KEY))
+    plan["state"] = "done"
+    plan["instruments"][0].update(
+        state="error",
+        note="Nie udało się pobrać z Dukascopy ani jednego pliku (3 prób dla dnia 2016-08-07).",
+    )
+    if wersja is None:
+        plan.pop("wersja", None)
+    else:
+        plan["wersja"] = wersja
+    storage.active().write(archiwum.PLAN_KEY, json.dumps(plan))
+    return plan
+
+
+def test_an_error_recorded_by_an_older_build_gets_a_second_chance(client, siec):
+    """Sedno zgłoszenia z wdrożenia: plan przeżywa wdrożenie, a jego notatka o błędzie
+    pochodzi z kodu, który przerywał po trzech nieudanych plikach — czyli ginął na niedzieli
+    (ma w archiwum tylko trzy godziny). Nowe zasady mają dać takiemu instrumentowi drugą
+    szansę same z siebie, bez klikania czegokolwiek.
+    """
+    zacznij(client, years=1)
+    zepsuj_plan(client)
+
+    plan = client.get("/api/archive/status").json()["plan"]
+    assert plan["instruments"][0]["state"] == "pending"
+    assert not plan["instruments"][0]["note"]
+    assert plan["state"] == "running"       # przeglądarka podejmie pracę po odświeżeniu
+    assert plan["wersja"] == sys.modules["app.archiwum"].WERSJA_PLANU
+
+
+def test_a_plan_from_the_current_build_is_left_alone(client, siec):
+    """Błąd zapisany przez ten sam kod jest prawdziwym wynikiem — nie kasujemy go po cichu."""
+    archiwum = sys.modules["app.archiwum"]
+    zacznij(client, years=1)
+    zepsuj_plan(client, wersja=archiwum.WERSJA_PLANU)
+
+    plan = client.get("/api/archive/status").json()["plan"]
+    assert plan["instruments"][0]["state"] == "error"
+    assert plan["state"] == "done"
+
+
+def test_a_cancelled_plan_is_not_resurrected_by_a_deployment(client, siec):
+    """Przerwanie to decyzja użytkownika — wdrożenie nie może jej cofnąć."""
+    import json
+
+    storage = sys.modules["app.storage"]
+    archiwum = sys.modules["app.archiwum"]
+
+    zacznij(client, years=1)
+    zepsuj_plan(client)
+    plan = json.loads(storage.active().read(archiwum.PLAN_KEY))
+    plan["state"] = "cancelled"
+    plan.pop("wersja", None)
+    storage.active().write(archiwum.PLAN_KEY, json.dumps(plan))
+
+    assert client.get("/api/archive/status").json()["plan"]["state"] == "cancelled"
+
+
+def test_retrying_resumes_the_failed_instrument_from_its_cursor(client, monkeypatch):
+    """„Ponów nieudane" nie zaczyna od zera — kursor pamięta pierwszy niepobrany dzień."""
+    import app.dukascopy as duka
+    archiwum = sys.modules["app.archiwum"]
+    library = sys.modules["app.library"]
+
+    monkeypatch.setattr(duka, "_fetch_hour", martwe_doby({f"2024-01-{d:02d}" for d in range(3, 6)}))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    monkeypatch.setattr(archiwum, "MAX_BEZOWOCNYCH", 1)
+
+    zacznij(client, years=1)
+    pozycja = dokoncz(client)["plan"]["instruments"][0]
+    assert pozycja["state"] == "error"
+    kursor, dni = pozycja["cursor"], pozycja["days_done"]
+
+    # Archiwum wraca do życia — powtórka ma dociągnąć resztę i zapisać zbiór.
+    monkeypatch.setattr(duka, "_fetch_hour", archiwum_atrapa())
+    wznowiony = client.post("/api/archive/retry").json()["plan"]["instruments"][0]
+    assert wznowiony["state"] == "pending"
+    assert wznowiony["cursor"] == kursor            # bez cofania się do początku
+    assert wznowiony["days_done"] == dni
+
+    pozycja = dokoncz(client)["plan"]["instruments"][0]
+    assert pozycja["state"] == "done"
+    assert library.entries()[0]["bars"] > 0
+
+
+def test_retrying_an_instrument_that_yielded_nothing_starts_over(client, monkeypatch):
+    """Instrument, który przeszedł cały zakres bez ani jednej świecy, nie ma czego wznawiać
+    od kursora — powtórka musi ruszyć od początku zakresu."""
+    import app.dukascopy as duka
+    monkeypatch.setattr(duka, "_fetch_hour", archiwum_atrapa(martwe=True))
+
+    zacznij(client, years=1)
+    plan = dokoncz(client)["plan"]
+    assert plan["instruments"][0]["state"] == "error"
+
+    monkeypatch.setattr(duka, "_fetch_hour", archiwum_atrapa())
+    wznowiony = client.post("/api/archive/retry").json()["plan"]["instruments"][0]
+    assert wznowiony["cursor"] == plan["date_from"]
+    assert wznowiony["days_done"] == 0
+    assert dokoncz(client)["plan"]["instruments"][0]["state"] == "done"
+
+
+def test_retrying_does_not_touch_what_already_landed_in_the_library(client, monkeypatch):
+    import app.dukascopy as duka
+    archiwum = sys.modules["app.archiwum"]
+
+    dziala = archiwum_atrapa()
+    # EUR/USD nie oddaje nic; GBP/USD pobiera się normalnie.
+    monkeypatch.setattr(duka, "_fetch_hour",
+                        lambda url: (None if "EURUSD" in url else dziala(url)))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    monkeypatch.setattr(archiwum, "MAX_ODMOW", 1)
+
+    zacznij(client, instruments=["GBPUSD", "EURUSD"], years=1)
+    plan = dokoncz(client)["plan"]
+    gotowy = next(p for p in plan["instruments"] if p["code"] == "GBPUSD")
+    assert gotowy["state"] == "done"
+
+    plan = client.post("/api/archive/retry").json()["plan"]
+    assert next(p for p in plan["instruments"] if p["code"] == "GBPUSD") == gotowy
+    assert next(p for p in plan["instruments"] if p["code"] == "EURUSD")["state"] == "pending"
+
+
+def test_retrying_a_plan_without_failures_says_so(client, siec):
+    zacznij(client, years=1)
+    dokoncz(client)
+    odp = client.post("/api/archive/retry")
+    assert odp.status_code == 400
+    assert "nieudanych" in odp.json()["detail"]
+
+
+def test_an_abandoned_running_plan_does_not_block_a_new_download(client, siec, monkeypatch):
+    """Karta zamknięta w połowie zostawia plan w stanie „w trakcie". Kroki idą z przeglądarki,
+    więc taki plan nie posunie się już nigdy — i nie może blokować startu na zawsze.
+    """
+    archiwum = sys.modules["app.archiwum"]
+
+    zacznij(client, years=1)
+    assert zacznij(client, years=1).status_code == 400      # świeży plan naprawdę biegnie
+
+    monkeypatch.setattr(archiwum, "PORZUCONY_PO", 0.0)
+    assert zacznij(client, years=1).status_code == 200
+
+
 def test_forgetting_the_plan_starts_from_a_clean_slate(client, siec):
     zacznij(client, years=1)
     client.delete("/api/archive")

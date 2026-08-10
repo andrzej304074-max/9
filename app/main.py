@@ -588,6 +588,12 @@ def archive_step() -> dict[str, Any]:
     return _archive_payload(archiwum.krok(_archive_budget(), cache_dir=DUKASCOPY_CACHE))
 
 
+@app.post("/api/archive/retry")
+def archive_retry() -> dict[str, Any]:
+    """Wznawia nieudane instrumenty, nie ruszając tych, które już trafiły do biblioteki."""
+    return _archive_payload(archiwum.ponow())
+
+
 @app.post("/api/archive/cancel")
 def archive_cancel() -> dict[str, Any]:
     """Przerywa pobieranie. Instrumenty domknięte wcześniej zostają w bibliotece."""
@@ -770,6 +776,9 @@ def diagnostics() -> dict[str, Any]:
         "python": sys.version.split()[0],
         "runtime": describe_runtime(),
         "storage": library.usage(),
+        # Numer zasad pobierania archiwum. Plan przeżywa wdrożenie, więc gdy w panelu wisi
+        # stary komunikat o błędzie, pierwsze pytanie brzmi: czy serwer ma już nowy kod.
+        "archive_rules": archiwum.WERSJA_PLANU,
         # Nazwy zmiennych, nigdy wartości — po to, żeby „nie wykrywa magazynu" dało się
         # zdiagnozować zdalnie: czy zmiennej nie ma, czy nazywa się inaczej niż domyślna.
         "blob_token_env": storage.find_token()[0],

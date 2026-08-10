@@ -163,6 +163,9 @@ def test_diagnostics_confirms_a_complete_deployment(monkeypatch, tmp_path):
     assert dane["frontend_ready"] is True
     assert dane["python"].startswith("3.")
     assert dane["storage"]["backend"]
+    # Po co: plan pobierania przeżywa wdrożenie, więc gdy w panelu wisi stary komunikat
+    # o błędzie, trzeba dać się odróżnić „serwer ma stary kod" od „to zapisany wynik".
+    assert dane["archive_rules"] == sys.modules["app.archiwum"].WERSJA_PLANU
 
 
 def test_a_complete_deployment_serves_the_page(monkeypatch, tmp_path):

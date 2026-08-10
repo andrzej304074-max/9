@@ -207,6 +207,7 @@ function wireEvents() {
   });
   $('btn-archive-start').addEventListener('click', startArchive);
   $('btn-archive-cancel').addEventListener('click', cancelArchive);
+  $('btn-archive-retry').addEventListener('click', retryArchive);
   ['archive_years', 'archive_interval'].forEach((id) => {
     $(id).addEventListener('change', refreshArchiveEstimate);
     $(id).addEventListener('input', refreshArchiveEstimate);
@@ -1297,6 +1298,16 @@ function archiveSummary(dane) {
     + (bledy ? `, ${bledy} nieudanych — szczegóły w tabeli poniżej.` : '.');
 }
 
+async function retryArchive() {
+  let ruszylo = false;
+  await withBusy('btn-archive-retry', 'Wznawiam nieudane instrumenty…', async () => {
+    const dane = await callApi('api/archive/retry', { method: 'POST' }, { allowRecovery: false });
+    renderArchive(dane);
+    ruszylo = dane.plan && dane.plan.state === 'running';
+  });
+  if (ruszylo) runArchiveLoop();
+}
+
 async function cancelArchive() {
   // Bieżący odcinek dobiegnie końca — przerwanie działa między odcinkami, nie w ich środku.
   await withBusy('btn-archive-cancel', 'Przerywam pobieranie — kończę bieżący odcinek…', async () => {
@@ -1319,16 +1330,15 @@ function renderArchive(dane) {
     + `${Number(postep.days_total).toLocaleString('pl-PL')} dni${zostalo}`;
 
   // Zakończony plan zostaje na ekranie razem z komunikatami — łatwo wziąć je za świeżą awarię.
-  // Mówimy więc wprost, że to zapis poprzedniego podejścia i że powtórka jest o jedno kliknięcie.
+  // Mówimy więc wprost, że to zapis poprzedniego podejścia, i dajemy przycisk powtórki obok.
   const zakonczony = plan.state !== 'running';
   const nieudane = (plan.instruments || []).filter((p) => p.state === 'error').length;
-  $('archive-note').hidden = !(zakonczony && nieudane);
+  $('archive-note-row').hidden = !(zakonczony && nieudane);
   if (zakonczony && nieudane) {
     $('archive-note').textContent = `Poprzednie pobranie zakończyło się błędem na `
       + `${nieudane} ${nieudane === 1 ? 'instrumencie' : 'instrumentach'} — poniżej jego zapis, `
-      + 'nie bieżący stan. Kliknij „Pobierz do biblioteki”, żeby spróbować ponownie: '
-      + 'ściągnięte godziny są w pamięci podręcznej, więc powtórka szybko dojdzie do miejsca, '
-      + 'w którym stanęła.';
+      + 'nie bieżący stan. „Ponów nieudane” wznawia je od miejsca, w którym stanęły, '
+      + 'bez ruszania tych, które trafiły już do biblioteki.';
   }
 
   const przerwane = plan.state === 'cancelled';

@@ -292,6 +292,11 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 .progress-text { flex: 1; color: var(--muted); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
 .progress .btn { width: auto; margin-top: 0; }
 
+/* Wyjaśnienie i powtórka stoją obok siebie; na wąskim ekranie przycisk schodzi pod tekst. */
+.archive-retry { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+.archive-retry .hint { flex: 1 1 260px; margin: 0; }
+.archive-retry .btn { width: auto; margin-top: 0; flex: 0 0 auto; }
+
 .weekdays { display: flex; flex-wrap: wrap; gap: 4px; }
 .weekdays label {
   display: inline-flex;

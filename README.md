@@ -183,10 +183,20 @@ instrument kończy się z wyjaśnieniem, a to, co zdążyło przyjść, zostaje 
 
 Odmowa archiwum na jednej dobie też nie kończy instrumentu — taka doba jest pomijana,
 kursor idzie dalej, a dopiero **ósma odmowa z rzędu** uznaje pobieranie za nieudane. Dzięki
-temu jeden zły dzień w środku dziesięciu lat nie przekreśla całej reszty. Zakończony plan
-zostaje na ekranie razem z komunikatami, więc panel mówi wprost, że to **zapis poprzedniego
-podejścia**, a nie bieżący stan — powtórne kliknięcie „Pobierz do biblioteki" zaczyna nowy
-plan i dzięki pamięci podręcznej szybko dochodzi do miejsca, w którym stanęło poprzednie.
+temu jeden zły dzień w środku dziesięciu lat nie przekreśla całej reszty.
+
+Nieudany instrument da się wznowić przyciskiem **„Ponów nieudane"**: rusza od swojego kursora,
+nie od zera, i nie tyka tych, które trafiły już do biblioteki. Od początku zaczyna tylko
+instrument, który przeszedł cały zakres bez ani jednej świecy — tam nie ma czego wznawiać.
+
+Plan przeżywa wdrożenie, a zapisana w nim notatka o błędzie — nie: pochodzi z kodu, który
+mógł uznawać za awarię coś, co dziś jest zwykłą dziurą. Dlatego plan nosi **numer wersji
+zasad** (`archive_rules` w `/api/diagnostics`). Po jego podbiciu nieudane instrumenty ze
+starszego planu dostają drugą szansę same z siebie — wystarczy wejść na stronę. Przerwanych
+planów to nie dotyczy: przerwanie jest decyzją użytkownika i wdrożenie jej nie cofa.
+
+Plan „w trakcie", którego nikt nie posuwa od kwadransa, jest uznawany za porzucony —
+zamknięta w połowie karta nie blokuje kolejnego pobierania.
 
 Dopiero domknięty instrument trafia do biblioteki jako jeden gotowy zbiór; niedokończone
 kawałki są tylko rusztowaniem i znikają po sklejeniu.
@@ -545,4 +555,5 @@ Frontend korzysta z tych samych endpointów, więc można je wołać skryptem:
 | `POST /api/archive/start` | `{"instruments": ["GBPUSD"], "years": 10, "interval_minutes": 15, "price": "bid"}` → zakłada plan pobierania. |
 | `POST /api/archive/step` | Wykonuje tyle pracy, ile mieści się w limicie czasu, i oddaje postęp. Wołane w pętli aż plan przestanie być `running`. |
 | `GET /api/archive/status` | Stan planu — także po zamknięciu przeglądarki albo z innej instancji. |
+| `POST /api/archive/retry` | Wznawia instrumenty, które skończyły błędem, od ich kursorów; udanych nie tyka. |
 | `POST /api/archive/cancel` | Przerywa pobieranie; instrumenty domknięte wcześniej zostają w bibliotece. |
