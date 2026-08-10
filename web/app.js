@@ -2,6 +2,7 @@
 'use strict';
 
 const STORAGE_KEY = 'gbpusd-backtester-config-v2';
+const ARCHIVE_KEY = 'gbpusd-backtester-archiwum-v1';
 const WEEKDAY_SHORT = ['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So', 'Nd'];
 const STRATEGIES = ['candle_direction', 'range_breakout'];
 const STRATEGY_LABELS = {
@@ -30,7 +31,13 @@ const state = {
   // każda strategia trzyma własny komplet ustawień, żeby przełączanie nic nie gubiło
   saved: {},
   compare: null,
-  archiveRunning: false,
+  archiveRunning: false,      // czy pętla kroków właśnie się kręci
+  // Zamiar prowadzenia pobierania. Osobno od `archiveRunning`, bo między założeniem planu
+  // a pierwszym krokiem jest chwila, w której pętla jeszcze nie ruszyła — a bez tego panel
+  // zdążył w niej mrugnąć napisem „wstrzymane" i podstawić przycisk wznawiania.
+  archiveDriving: false,
+  archivePlan: null,          // ostatni stan planu — przyciski wiedzą z niego, co zrobią
+  archiveProgress: {},
 };
 
 const $ = (id) => document.getElementById(id);
@@ -208,8 +215,10 @@ function wireEvents() {
   $('btn-archive-start').addEventListener('click', startArchive);
   $('btn-archive-cancel').addEventListener('click', cancelArchive);
   $('btn-archive-retry').addEventListener('click', retryArchive);
+  $('btn-archive-resume').addEventListener('click', resumeArchiveLoop);
+  $('archive_price').addEventListener('change', persistArchiveChoice);
   ['archive_years', 'archive_interval'].forEach((id) => {
-    $(id).addEventListener('change', refreshArchiveEstimate);
+    $(id).addEventListener('change', () => { persistArchiveChoice(); refreshArchiveEstimate(); });
     $(id).addEventListener('input', refreshArchiveEstimate);
   });
   $('archive-panel').addEventListener('toggle', () => {
@@ -1172,6 +1181,9 @@ const ARCHIVE_STATES = {
 };
 
 function buildArchiveInstruments(instruments) {
+  // Wybór z poprzedniej wizyty. Bez tego każde odświeżenie strony zaznaczało wszystko
+  // od nowa i wyglądało, jakby ustawienia pobierania w ogóle się nie zmieniały.
+  const zapamietane = loadArchiveChoice();
   const host = $('archive-instruments');
   host.innerHTML = '';
   Object.entries(instruments).forEach(([code, label]) => {
@@ -1180,11 +1192,19 @@ function buildArchiveInstruments(instruments) {
     input.type = 'checkbox';
     input.value = code;
     input.className = 'archive-instrument';
-    input.checked = true;
-    input.addEventListener('change', refreshArchiveEstimate);
+    input.checked = zapamietane.instruments ? zapamietane.instruments.includes(code) : true;
+    input.addEventListener('change', () => { persistArchiveChoice(); refreshArchiveEstimate(); });
     wrap.append(input, document.createTextNode(label));
     host.append(wrap);
   });
+  if (!document.querySelector('.archive-instrument:checked')) {
+    // Pusty wybór nie ma jak ruszyć — zapamiętana lista mogła stracić aktualność.
+    const pierwszy = document.querySelector('.archive-instrument');
+    if (pierwszy) pierwszy.checked = true;
+  }
+  if (zapamietane.years) $('archive_years').value = zapamietane.years;
+  if (zapamietane.interval_minutes) $('archive_interval').value = zapamietane.interval_minutes;
+  if (zapamietane.price) $('archive_price').value = zapamietane.price;
 }
 
 function archiveChoice() {
@@ -1194,6 +1214,22 @@ function archiveChoice() {
     interval_minutes: Number($('archive_interval').value),
     price: $('archive_price').value,
   };
+}
+
+function loadArchiveChoice() {
+  try {
+    return JSON.parse(localStorage.getItem(ARCHIVE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function persistArchiveChoice() {
+  try {
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(archiveChoice()));
+  } catch {
+    // Prywatny tryb przeglądarki potrafi odmówić zapisu; to nie powód, żeby cokolwiek psuć.
+  }
 }
 
 async function refreshArchiveEstimate() {
@@ -1231,22 +1267,42 @@ async function startArchive() {
     setStatus('Zaznacz przynajmniej jeden instrument do pobrania.', 'error');
     return;
   }
-  const e = `${wybor.years} ${wybor.years === 1 ? 'rok' : 'lat'}`;
-  if (!window.confirm(`Pobrać ${e} historii dla ${wybor.instruments.length} instrumentów?\n\n`
-    + 'Może to potrwać od kilkunastu minut do kilku godzin. Postęp zapisuje się na bieżąco, '
-    + 'więc przerwanie niczego nie kasuje — kolejne uruchomienie ruszy od tego samego miejsca.')) return;
+  persistArchiveChoice();
+
+  // Trwający plan nie może zamieniać przycisku w ślepy zaułek. Pytamy wprost i zastępujemy —
+  // inaczej zmiana instrumentów czy liczby lat nie miałaby jak wejść w życie.
+  const trwa = state.archivePlan && state.archivePlan.state === 'running';
+  const lata = `${wybor.years} ${wybor.years === 1 ? 'rok' : 'lat'}`;
+  const pytanie = trwa
+    ? `Pobieranie archiwum już trwa (${archiveDone()}). Przerwać je i zacząć nowe: `
+      + `${lata} historii dla ${wybor.instruments.length} instrumentów?\n\n`
+      + 'Instrumenty domknięte wcześniej zostają w bibliotece, a pobrane godziny w pamięci '
+      + 'podręcznej — nic z dotychczasowej pracy nie przepada.'
+    : `Pobrać ${lata} historii dla ${wybor.instruments.length} instrumentów?\n\n`
+      + 'Może to potrwać od kilkunastu minut do kilku godzin. Postęp zapisuje się na bieżąco, '
+      + 'więc przerwanie niczego nie kasuje — kolejne uruchomienie ruszy od tego samego miejsca.';
+  if (!window.confirm(pytanie)) return;
 
   let ruszylo = false;
+  state.archiveDriving = true;          // od tej chwili panel wie, że pobieranie ma iść
   await withBusy('btn-archive-start', 'Zakładam plan pobierania…', async () => {
     const dane = await callApi('api/archive/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(wybor),
+      body: JSON.stringify({ ...wybor, replace: true }),
     }, { allowRecovery: false });
     renderArchive(dane);
     ruszylo = dane.plan && dane.plan.state === 'running';
   });
+  state.archiveDriving = ruszylo;
   if (ruszylo) runArchiveLoop();
+}
+
+function archiveDone() {
+  const p = state.archiveProgress || {};
+  return p.days_total
+    ? `${Math.round((p.fraction || 0) * 100)}% zrobione`
+    : 'w trakcie';
 }
 
 async function resumeArchive() {
@@ -1266,8 +1322,10 @@ async function resumeArchive() {
 
 async function runArchiveLoop() {
   if (state.archiveRunning) return;         // dwie pętle deptałyby sobie po krokach
-  state.archiveRunning = true;
-  $('btn-archive-start').disabled = true;
+  state.archiveRunning = state.archiveDriving = true;
+  // Przycisk startu zostaje czynny: trwające pobieranie nie może odbierać możliwości
+  // zmiany instrumentów. Kliknięcie w trakcie zastąpi plan, nie zawiśnie na odmowie.
+  odswiezPrzyciskArchiwum();
   try {
     for (;;) {
       const dane = await callApi('api/archive/step', { method: 'POST' }, { allowRecovery: false });
@@ -1280,11 +1338,25 @@ async function runArchiveLoop() {
     }
   } catch (err) {
     setStatus('Pobieranie archiwum przerwane: ' + err.message
-      + ' Postęp jest zapisany — kliknij „Pobierz do biblioteki”, żeby ruszyć dalej.', 'error');
+      + ' Postęp jest zapisany — kliknij „Wznów”, żeby ruszyć dalej.', 'error');
   } finally {
-    state.archiveRunning = false;
-    $('btn-archive-start').disabled = false;
+    state.archiveRunning = state.archiveDriving = false;
+    renderArchive({ plan: state.archivePlan, progress: state.archiveProgress });
   }
+}
+
+/** Etykieta przycisku startu mówi, co się stanie po kliknięciu. */
+function odswiezPrzyciskArchiwum() {
+  const trwa = state.archivePlan && state.archivePlan.state === 'running';
+  $('btn-archive-start').textContent = trwa && state.archiveDriving
+    ? 'Zacznij od nowa' : 'Pobierz do biblioteki';
+}
+
+/** Wznawia plan, który został „w trakcie", ale nikt go już nie posuwa. */
+function resumeArchiveLoop() {
+  $('archive-panel').open = true;
+  setStatus('Wznawiam pobieranie archiwum.', 'ok');
+  runArchiveLoop();
 }
 
 function archiveSummary(dane) {
@@ -1300,11 +1372,13 @@ function archiveSummary(dane) {
 
 async function retryArchive() {
   let ruszylo = false;
+  state.archiveDriving = true;
   await withBusy('btn-archive-retry', 'Wznawiam nieudane instrumenty…', async () => {
     const dane = await callApi('api/archive/retry', { method: 'POST' }, { allowRecovery: false });
     renderArchive(dane);
     ruszylo = dane.plan && dane.plan.state === 'running';
   });
+  state.archiveDriving = ruszylo;
   if (ruszylo) runArchiveLoop();
 }
 
@@ -1318,8 +1392,13 @@ async function cancelArchive() {
 function renderArchive(dane) {
   const plan = dane && dane.plan;
   const postep = (dane && dane.progress) || {};
+  // Zapamiętany plan mówi przyciskom, co się stanie po kliknięciu — bez tego przycisk
+  // startu nie wiedział, że coś już trwa, i zwracał odmowę zamiast zapytać.
+  state.archivePlan = plan || null;
+  state.archiveProgress = postep;
   $('archive-table-wrap').hidden = !plan;
   $('archive-progress').hidden = !plan || plan.state !== 'running';
+  odswiezPrzyciskArchiwum();
   if (!plan) return;
 
   $('archive-fill').style.width = `${Math.round((postep.fraction || 0) * 100)}%`;
@@ -1328,6 +1407,14 @@ function renderArchive(dane) {
     `${postep.instruments_done}/${postep.instruments_total} instrumentów · `
     + `${Number(postep.days_done).toLocaleString('pl-PL')} z `
     + `${Number(postep.days_total).toLocaleString('pl-PL')} dni${zostalo}`;
+
+  // Plan bywa „w trakcie", choć nikt go już nie posuwa — kroki idą z przeglądarki, więc
+  // zerwane połączenie albo zamknięta karta zostawiają zamrożony pasek. Zamiast udawać,
+  // że coś się dzieje, mówimy wprost i dajemy czym ruszyć dalej.
+  const zamrozone = plan.state === 'running' && !state.archiveDriving;
+  $('btn-archive-resume').hidden = !zamrozone;
+  $('btn-archive-cancel').hidden = zamrozone;
+  if (zamrozone) $('archive-text').textContent += ' · wstrzymane';
 
   // Zakończony plan zostaje na ekranie razem z komunikatami — łatwo wziąć je za świeżą awarię.
   // Mówimy więc wprost, że to zapis poprzedniego podejścia, i dajemy przycisk powtórki obok.
@@ -1344,9 +1431,11 @@ function renderArchive(dane) {
   const przerwane = plan.state === 'cancelled';
   $('archive-body').innerHTML = (plan.instruments || []).map((p) => {
     const udzial = p.days_total ? Math.round((p.days_done / p.days_total) * 100) : 0;
-    // Po przerwaniu nic już nie „pobiera" ani nie „czeka" — pokazywanie tego wprowadzałoby w błąd.
-    const stan = przerwane && (p.state === 'running' || p.state === 'pending')
-      ? 'przerwane' : (ARCHIVE_STATES[p.state] || p.state);
+    // Nic już nie „pobiera" ani nie „czeka", gdy plan stoi — pokazywanie tego wprowadzałoby
+    // w błąd tak samo po przerwaniu, jak przy pobieraniu, którego nikt nie posuwa.
+    const wisi = p.state === 'running' || p.state === 'pending';
+    const stan = wisi && (przerwane || zamrozone)
+      ? (przerwane ? 'przerwane' : 'wstrzymane') : (ARCHIVE_STATES[p.state] || p.state);
     return `<tr>
       <td>${escapeHtml(p.label)}</td>
       <td class="num">${udzial}%</td>

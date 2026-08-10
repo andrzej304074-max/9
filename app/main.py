@@ -543,6 +543,9 @@ class ArchiveRequest(BaseModel):
     years: int = 10
     interval_minutes: int = 15
     price: str = "bid"
+    # Świadome „przerwij tamto i zacznij to" — bez tego trwający plan zamieniał przycisk
+    # startu w ślepy zaułek, a zmiana instrumentów nie miała jak wejść w życie.
+    replace: bool = False
 
 
 def _archive_payload(plan: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -577,7 +580,8 @@ def archive_status() -> dict[str, Any]:
 @app.post("/api/archive/start")
 def archive_start(request: ArchiveRequest) -> dict[str, Any]:
     plan = archiwum.zacznij(
-        request.instruments, request.years, request.interval_minutes, request.price
+        request.instruments, request.years, request.interval_minutes, request.price,
+        zastap=request.replace,
     )
     return _archive_payload(plan)
 

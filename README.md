@@ -184,6 +184,13 @@ i przesuwa kursor. Wynika z tego kilka wygodnych własności:
   w bibliotece,
 - **powtórka nie pobiera drugi raz tego samego** — raz ściągnięte godziny są w pamięci podręcznej.
 
+Kroki idą z przeglądarki, więc panel pokazuje wprost, czy ktoś je jeszcze prowadzi. Trwające
+pobieranie zmienia przycisk startu na **„Zacznij od nowa"** — kliknięcie pyta o potwierdzenie
+i zastępuje plan bieżącymi ustawieniami, zamiast odmawiać. Plan, który został „w trakcie", ale
+którego nikt nie posuwa (zerwane łącze, zamknięta karta), jest opisany jako **wstrzymany**
+i dostaje przycisk **„Wznów"**. Wybór instrumentów, liczba lat, długość świecy i cena zostają
+zapamiętane w przeglądarce, więc odświeżenie strony ich nie kasuje.
+
 Dziury w archiwum nie przerywają pracy. Pojedyncza godzina bez odpowiedzi jest liczona
 i pomijana; cała doba, z której nie przyszło nic, też — z tą różnicą, że jest raportowana
 osobno, bo to brakujący dzień handlowy, a nie drobna luka. Komunikat „nie udało się pobrać

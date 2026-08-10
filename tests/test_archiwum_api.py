@@ -656,6 +656,76 @@ def test_retrying_a_plan_without_failures_says_so(client, siec):
     assert "nieudanych" in odp.json()["detail"]
 
 
+def test_a_running_plan_can_be_replaced_on_purpose(client, siec):
+    """Zgłoszenie: „nie da się kliknąć pobierz, jak coś się odpaliło wcześniej, i nie zmienia
+    się to, co pobieramy". Trwający plan nie może zamieniać przycisku w ślepy zaułek —
+    świadome „przerwij tamto i zacznij to" musi przechodzić, razem z nowymi ustawieniami.
+    """
+    zacznij(client, instruments=["GBPUSD"], years=1)
+    assert zacznij(client, instruments=["EURUSD"], years=1).status_code == 400
+
+    odp = zacznij(client, instruments=["EURUSD"], years=1, replace=True)
+    assert odp.status_code == 200
+    plan = odp.json()["plan"]
+    assert [p["code"] for p in plan["instruments"]] == ["EURUSD"]     # nowy wybór wszedł w życie
+    assert plan["state"] == "running"
+
+
+def test_replacing_a_plan_keeps_what_already_reached_the_library(client, siec):
+    """Zastąpienie planu nie może odbierać instrumentów domkniętych wcześniej."""
+    library = sys.modules["app.library"]
+
+    zacznij(client, instruments=["GBPUSD"], years=1)
+    dokoncz(client)
+    ile = len(library.entries())
+    assert ile == 1
+
+    zacznij(client, instruments=["EURUSD"], years=1, replace=True)
+    assert len(library.entries()) == ile
+
+
+def test_a_step_in_flight_does_not_overwrite_a_freshly_started_plan(client, siec, tmp_path):
+    """Krok trwa kilkadziesiąt sekund, a przez ten czas użytkownik może zacząć nowy plan.
+    Krok trzyma w ręku wersję sprzed pobierania — zapisanie jej z powrotem cofnęłoby
+    zastąpienie i w tabeli dalej stałby stary wybór instrumentów.
+    """
+    archiwum = sys.modules["app.archiwum"]
+
+    zacznij(client, instruments=["GBPUSD"], years=1)
+    stary = client.get("/api/archive/status").json()["plan"]
+
+    prawdziwy = archiwum._kawalek
+
+    def zastap_w_trakcie(plan, pozycja, koniec_budzetu, cache_dir):
+        prawdziwy(plan, pozycja, koniec_budzetu, cache_dir)
+        if archiwum._kawalek is zastap_w_trakcie:          # tylko raz
+            archiwum._kawalek = prawdziwy
+            zacznij(client, instruments=["EURUSD"], years=1, replace=True)
+
+    archiwum._kawalek = zastap_w_trakcie
+    try:
+        dane = client.post("/api/archive/step").json()
+    finally:
+        archiwum._kawalek = prawdziwy
+
+    assert [p["code"] for p in dane["plan"]["instruments"]] == ["EURUSD"]
+    assert dane["plan"]["id"] != stary["id"]
+    # Kawałki starego planu nie mogą zostać w magazynie jako sieroty.
+    kawalki = list((tmp_path / "datasets" / "archiwum").rglob("*.csv"))
+    assert all(stary["id"] not in str(p) for p in kawalki)
+
+
+def test_replacing_leaves_no_orphaned_chunks(client, siec, tmp_path):
+    """Kawałki porzuconego planu to śmieci — po zastąpieniu nie mogą zostać w magazynie."""
+    zacznij(client, instruments=["GBPUSD"], years=1)
+    client.post("/api/archive/step")            # zdąży powstać przynajmniej jeden kawałek
+
+    zacznij(client, instruments=["GBPUSD"], years=1, replace=True)
+    biezacy = client.get("/api/archive/status").json()["plan"]["id"]
+    kawalki = list((tmp_path / "datasets" / "archiwum").rglob("*.csv"))
+    assert all(biezacy in str(p) for p in kawalki)
+
+
 def test_an_abandoned_running_plan_does_not_block_a_new_download(client, siec, monkeypatch):
     """Karta zamknięta w połowie zostawia plan w stanie „w trakcie". Kroki idą z przeglądarki,
     więc taki plan nie posunie się już nigdy — i nie może blokować startu na zawsze.

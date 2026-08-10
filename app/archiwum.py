@@ -132,9 +132,15 @@ def _po_wdrozeniu(plan: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
-def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict[str, Any]:
-    """Zakłada nowy plan. Trwający plan trzeba najpierw przerwać — inaczej dwa pobierania
-    deptałyby sobie po kawałkach tego samego instrumentu."""
+def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str,
+            zastap: bool = False) -> dict[str, Any]:
+    """Zakłada nowy plan.
+
+    Trwający plan blokuje start, bo dwa pobierania deptałyby sobie po kawałkach tego samego
+    instrumentu. `zastap` to świadoma decyzja użytkownika — „przerwij tamto i zacznij to".
+    Bez niej przycisk startu bywał ślepym zaułkiem: plan zostawał w stanie „w trakcie",
+    a zmiana instrumentów czy liczby lat nie miała jak wejść w życie.
+    """
     kody = [k.upper() for k in instrumenty]
     nieznane = [k for k in kody if k not in INSTRUMENTS]
     if nieznane:
@@ -149,7 +155,8 @@ def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict
         raise DataError("Cena musi być jedną z: bid, ask, mid.")
 
     poprzedni = stan()
-    if poprzedni and poprzedni.get("state") == "running" and not _porzucony(poprzedni):
+    if (poprzedni and poprzedni.get("state") == "running"
+            and not zastap and not _porzucony(poprzedni)):
         raise DataError("Pobieranie archiwum już trwa. Przerwij je albo poczekaj na koniec.")
     if poprzedni:
         _sprzataj(poprzedni)
@@ -294,11 +301,16 @@ def krok(budzet_sekund: float, cache_dir: Optional[Path] = None) -> dict[str, An
         if time.monotonic() >= koniec_budzetu:
             break
 
-    # Przerwanie mogło przyjść w trakcie kroku — wtedy w magazynie leży już plan oznaczony
-    # jako przerwany, a my trzymamy w ręku jego wersję sprzed pobierania. Decyzja użytkownika
-    # jest ważniejsza niż wynik kroku, więc jej nie nadpisujemy; kawałki dociągnięte po
-    # przerwaniu trzeba przy okazji posprzątać, bo `przerwij` jeszcze ich nie widział.
+    # Decyzja użytkownika podjęta w trakcie kroku jest ważniejsza niż jego wynik. Krok trwa
+    # kilkadziesiąt sekund i przez ten czas w magazynie mógł stanąć zupełnie inny plan —
+    # a my trzymamy w ręku wersję sprzed pobierania i zapisalibyśmy ją z powrotem.
     zapisany = stan()
+    if zapisany and zapisany.get("id") != plan["id"]:
+        # Powstał nowy plan (przycisk „Zacznij od nowa"). Nasz jest już nieaktualny: nie
+        # zapisujemy go, a kawałki dociągnięte po zastąpieniu sprzątamy, bo `zacznij`
+        # jeszcze ich nie widział. To, co zdążyło trafić do biblioteki, zostaje.
+        _sprzataj(plan)
+        return zapisany
     if zapisany and zapisany.get("state") == "cancelled":
         plan["state"] = "cancelled"
         _sprzataj(plan)
