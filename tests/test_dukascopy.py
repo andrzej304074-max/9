@@ -1406,3 +1406,99 @@ def test_a_dead_connection_is_not_retried(monkeypatch):
     r = duka.probe()
     assert r["ok"] is False
     assert r["attempts"] == 1
+
+
+def test_a_read_timeout_is_not_reported_as_a_block(monkeypatch):
+    """Zgłoszenie z wdrożenia: „Brak połączenia z archiwum (The read operation timed out).
+    Środowisko może blokować ruch wychodzący". To dwie różne rzeczy zlane w jedną.
+
+    Timeout *odczytu* przychodzi już po zestawieniu połączenia i wysłaniu żądania — czyli
+    ruch wychodzący działa. Wysyłanie użytkownika do konfiguracji sieci było mylące.
+    """
+    import app.dukascopy as duka
+
+    def cisza(*a, **k):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", cisza)
+    monkeypatch.setattr(duka, "PRZERWY_DIAGNOZY", (0, 0))
+
+    r = duka.probe()
+    assert r["ok"] is False
+    assert "nie jest blokada" in r["error"]
+    assert "blokować ruch wychodzący" not in r["error"]
+    assert r["attempts"] == duka.PROBY_DIAGNOZY      # cisza mija sama, więc pytamy ponownie
+
+
+def test_a_refused_connection_still_points_at_the_network(monkeypatch):
+    """Odmowa przy nawiązywaniu połączenia to już naprawdę sprawa sieci wdrożenia."""
+    import app.dukascopy as duka
+
+    def odmowa(*a, **k):
+        raise duka.urllib.error.URLError(ConnectionRefusedError("Connection refused"))
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", odmowa)
+    r = duka.probe()
+    assert "blokować ruch wychodzący" in r["error"]
+    assert r["attempts"] == 1                       # odmowa nie mija sama
+
+
+def test_a_dns_failure_is_named_separately(monkeypatch):
+    import socket
+
+    import app.dukascopy as duka
+
+    def brak_nazwy(*a, **k):
+        raise duka.urllib.error.URLError(socket.gaierror("Name or service not known"))
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", brak_nazwy)
+    r = duka.probe()
+    assert "DNS" in r["error"]
+
+
+def test_the_probe_waits_longer_than_the_bulk_download(monkeypatch):
+    """Limit dobrany do tysięcy plików zamienia przy jednym żądaniu „wolno" w „zablokowane"."""
+    import app.dukascopy as duka
+
+    uzyty = {}
+
+    def zapamietaj(request, timeout=None, **k):
+        uzyty["timeout"] = timeout
+        raise duka.urllib.error.URLError("stop")
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", zapamietaj)
+    duka.probe()
+    assert uzyty["timeout"] == duka.TIMEOUT_DIAGNOZY > duka.TIMEOUT_SECONDS
+
+
+def test_the_probe_fits_inside_the_request_limit(monkeypatch):
+    """Diagnostyka, która sama przekracza limit żądania wdrożenia, pokazuje błąd platformy
+    zamiast werdyktu. Przy powolnych próbach ponowienie musi więc odpaść."""
+    import app.dukascopy as duka
+
+    zegar = {"teraz": 0.0}
+    monkeypatch.setattr(duka.time, "monotonic", lambda: zegar["teraz"])
+    monkeypatch.setattr(duka.time, "sleep", lambda s: zegar.__setitem__("teraz", zegar["teraz"] + s))
+
+    def wolna_cisza(*a, **k):
+        zegar["teraz"] += duka.TIMEOUT_DIAGNOZY      # próba zjada cały swój limit
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", wolna_cisza)
+    r = duka.probe()
+
+    assert r["attempts"] == 1                        # druga próba by się nie zmieściła
+    assert zegar["teraz"] <= duka.BUDZET_DIAGNOZY
+    assert "nie jest blokada" in r["error"]
+
+
+def test_fast_refusals_still_get_every_attempt(monkeypatch):
+    """Gdy odpowiedź wraca od razu, budżet nie jest problemem — pytamy tyle razy, ile wolno."""
+    import app.dukascopy as duka
+
+    def szybkie_503(*a, **k):
+        raise duka.urllib.error.HTTPError("u", 503, "Service Unavailable", {}, None)
+
+    monkeypatch.setattr(duka.urllib.request, "urlopen", szybkie_503)
+    monkeypatch.setattr(duka, "PRZERWY_DIAGNOZY", (0, 0))
+    assert duka.probe()["attempts"] == duka.PROBY_DIAGNOZY

@@ -100,6 +100,11 @@ wdrożeniu bezserwerowym samo wznawia pobieranie po każdej przerwie na limit cz
 
 Przycisk **„Sprawdź połączenie"** (widoczny przy wybranym Dukascopy) pobiera jeden testowy
 plik i mówi wprost, czy archiwum jest osiągalne — przydaje się, gdy pobieranie nie rusza.
+Rozróżnia przy tym trzy zupełnie różne sytuacje, które łatwo pomylić: **nie dało się połączyć**
+(blokada sieci wdrożenia albo DNS), **połączono, ale nie przyszła odpowiedź** (przeciążenie
+po stronie archiwum — ruch wychodzący działa) oraz **odpowiedź z kodem błędu** (403 to blokada
+adresu, 503 i 429 mijają same). Statusy z rodziny „spróbuj później" ponawia i mówi, ile prób
+zajęło, mieszcząc się w limicie czasu żądania.
 Raportuje też, czy archiwum udostępnia gotowe świece minutowe: jeśli tak, pobieranie idzie
 nimi i jest około dwudziestokrotnie szybsze.
 

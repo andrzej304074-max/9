@@ -66,6 +66,17 @@ MIN_WORKERS = 2             # poniżej tego nie schodzimy, bo pobieranie stanę�
 PROBY_DIAGNOZY = 3
 PRZERWY_DIAGNOZY = (1.0, 2.5)
 
+# Diagnostyka może być cierpliwsza niż pobieranie. Ośmiosekundowy limit jest dobrany do
+# tysięcy plików, gdzie każda sekunda mnoży się przez ich liczbę — ale przy jednym żądaniu
+# zamienia „wolno" w „zablokowane" i podsuwa fałszywą diagnozę.
+TIMEOUT_DIAGNOZY = 25
+
+# Cała diagnostyka musi zmieścić się w limicie żądania wdrożenia — inaczej sama by go
+# przekroczyła i użytkownik zobaczyłby błąd platformy zamiast werdyktu. Ponawiamy więc tylko
+# dopóki następna próba ma szansę się zmieścić: przy szybkich odmowach starcza na wszystkie,
+# przy pełnych timeoutach zostaje jedna, i tak trwająca ćwierć minuty.
+BUDZET_DIAGNOZY = 40.0
+
 # Po tylu dobach z rzędu bez ani jednego pliku uznajemy, że to nie dziura w archiwum,
 # tylko blokada — i oddajemy sterowanie zamiast mielić resztę zakresu na pusto.
 MAX_DEAD_DAYS = 4
@@ -639,7 +650,7 @@ def probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, object]:
 
     for numer in range(PROBY_DIAGNOZY):
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_DIAGNOZY) as response:
                 payload = response.read()
             elapsed = round((time.monotonic() - started) * 1000)
             try:
@@ -663,20 +674,67 @@ def probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, object]:
             }
         except urllib.error.HTTPError as exc:
             # „Chwilowo niedostępne" bierzemy na słowo i sprawdzamy, czy naprawdę mija.
-            if exc.code in STATUSY_LIMITU and numer < PROBY_DIAGNOZY - 1:
+            if exc.code in STATUSY_LIMITU and _warto_ponowic(numer, started):
                 time.sleep(PRZERWY_DIAGNOZY[min(numer, len(PRZERWY_DIAGNOZY) - 1)])
                 continue
             return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
                     "status": exc.code, "attempts": numer + 1,
                     "error": _opis_diagnozy(exc.code, numer + 1)}
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # Cisza po nawiązanym połączeniu to nie blokada, tylko przeciążenie — i mija
+            # sama, więc ma sens spytać jeszcze raz, o ile starczy czasu.
+            if _cisza_po_polaczeniu(exc) and _warto_ponowic(numer, started):
+                time.sleep(PRZERWY_DIAGNOZY[min(numer, len(PRZERWY_DIAGNOZY) - 1)])
+                continue
             return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
-                    "attempts": numer + 1,
-                    "error": f"Brak połączenia z archiwum ({exc}). "
-                             "Środowisko może blokować ruch wychodzący do datafeed.dukascopy.com."}
+                    "attempts": numer + 1, "error": _opis_ciszy(exc, numer + 1)}
 
     return {"ok": False, "url": url, "ms": round((time.monotonic() - started) * 1000),
             "attempts": PROBY_DIAGNOZY, "error": "Archiwum nie odpowiedziało."}
+
+
+def _warto_ponowic(numer: int, zaczeto: float) -> bool:
+    """Czy została jeszcze próba i czy zdąży się zmieścić w budżecie diagnostyki."""
+    if numer >= PROBY_DIAGNOZY - 1:
+        return False
+    przerwa = PRZERWY_DIAGNOZY[min(numer, len(PRZERWY_DIAGNOZY) - 1)]
+    zuzyte = time.monotonic() - zaczeto
+    return zuzyte + przerwa + TIMEOUT_DIAGNOZY <= BUDZET_DIAGNOZY
+
+
+def _cisza_po_polaczeniu(exc: BaseException) -> bool:
+    """Czy połączenie stanęło, a zabrakło tylko odpowiedzi.
+
+    `URLError` opakowuje to, co poszło nie tak przy *nawiązywaniu* połączenia: nieznana
+    nazwa, odmowa, brak trasy. Goły `TimeoutError` przychodzi z odczytu, czyli już po
+    zestawieniu połączenia i wysłaniu żądania — a to znaczy coś zupełnie innego.
+    """
+    return isinstance(exc, (socket.timeout, TimeoutError)) and not isinstance(
+        exc, urllib.error.URLError)
+
+
+def _opis_ciszy(exc: BaseException, prob: int) -> str:
+    """Werdykt, gdy nie przyszła żadna odpowiedź HTTP.
+
+    Rozróżnienie jest tu ważniejsze niż gdziekolwiek indziej: „nie dało się połączyć"
+    kieruje do konfiguracji sieci wdrożenia, a „połączono, ale cisza" — do przeczekania.
+    Zlanie ich w jedno „środowisko może blokować ruch" wysyłało po pomoc w złą stronę.
+    """
+    ile = "" if prob == 1 else f" przy każdej z {prob} prób"
+    if _cisza_po_polaczeniu(exc):
+        return (
+            f"Połączenie z archiwum zostało nawiązane, ale odpowiedź nie przyszła w ciągu "
+            f"{TIMEOUT_DIAGNOZY} s{ile}. To nie jest blokada — serwer Dukascopy jest z tego "
+            "wdrożenia osiągalny, tylko nie odpowiada na czas. Zwykle znaczy to przeciążenie "
+            "po jego stronie: odczekaj kilkanaście minut i spróbuj ponownie. Jeśli cisza "
+            "utrzymuje się godzinami, pobierz dane lokalnie (tools/pobierz_archiwum.py) "
+            "i wgraj plik CSV."
+        )
+    if isinstance(getattr(exc, "reason", None), socket.gaierror) or isinstance(exc, socket.gaierror):
+        return (f"Wdrożenie nie rozwiązuje nazwy datafeed.dukascopy.com ({exc}). To blokada DNS "
+                "albo brak wyjścia do sieci — nie problem z danymi.")
+    return (f"Nie udało się nawiązać połączenia z archiwum ({exc}). "
+            "Środowisko może blokować ruch wychodzący do datafeed.dukascopy.com.")
 
 
 def _opis_diagnozy(kod: int, prob: int) -> str:
