@@ -17,6 +17,8 @@ from __future__ import annotations
 import http.client
 import lzma
 import os
+import socket
+import ssl
 import struct
 import threading
 import time
@@ -24,6 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -39,7 +42,23 @@ TICK_STRUCT = struct.Struct(">3I2f")  # czas, ask, bid, wolumen ask, wolumen bid
 # zamieniał pobieranie w wielominutowe zawieszenie, zamiast w szybki, czytelny błąd.
 TIMEOUT_SECONDS = 8
 MAX_WORKERS = 24
-RETRIES = 2
+RETRIES = 3
+
+# Odstępy między ponowieniami jednego pliku. Rosnące, bo najczęstszą przyczyną porażki
+# jest limit żądań po stronie archiwum — a na to jedyną odpowiedzią jest poczekać.
+PRZERWY_PONOWIEN = (0.4, 1.2, 3.0)
+
+# Dodatkowe podejścia, gdy powodem porażki jest limit żądań albo zerwane połączenie.
+# Zwykła wywrotka nie mija sama, więc dobijanie się nie ma sensu; limit — mija, i to
+# dokładnie wtedy, gdy hamulec zdąży zwęzić strumień. Bez tego pierwsza fala żądań
+# przepalała cały budżet ponowień, zanim tempo w ogóle zdążyło spaść.
+PONOWIENIA_LIMITU = 2
+
+# Statusy, którymi archiwum mówi wprost „za dużo tego naraz". Traktujemy je inaczej niż
+# zwykłą wywrotkę: nie ma sensu dobijać się szybciej, trzeba zwolnić wszystkim wątkom.
+STATUSY_LIMITU = (429, 503, 502, 504)
+HAMULEC_MAX = 8.0           # najdłuższa pauza, jaką hamulec potrafi nałożyć
+MIN_WORKERS = 2             # poniżej tego nie schodzimy, bo pobieranie stanęłoby w miejscu
 
 # Po tylu dobach z rzędu bez ani jednego pliku uznajemy, że to nie dziura w archiwum,
 # tylko blokada — i oddajemy sterowanie zamiast mielić resztę zakresu na pusto.
@@ -348,6 +367,141 @@ def ticks_to_bars(ticks: Iterable[Tick], interval_minutes: int, price: str = "bi
     return builder.bars()
 
 
+class _Powody:
+    """Zlicza, dlaczego pliki nie przyszły — jeden licznik na powód.
+
+    Bez tego komunikat o awarii brzmi „nie udało się pobrać ani jednego pliku" i nie mówi
+    nic, co dałoby się z tym zrobić. A powód rozstrzyga o zupełnie różnych krokach: limit
+    żądań mija sam, blokada sieci wymaga zmiany wdrożenia, a odpowiedź 404 znaczy tylko
+    tyle, że tych plików w archiwum nie ma.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._ile: dict[str, int] = {}
+
+    def zglos(self, powod: str) -> None:
+        with self._lock:
+            self._ile[powod] = self._ile.get(powod, 0) + 1
+
+    def wyczysc(self) -> None:
+        with self._lock:
+            self._ile.clear()
+
+    def zbierz(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._ile)
+
+    def opis(self) -> str:
+        """Powody od najczęstszego, w formie do wklejenia w komunikat."""
+        pozycje = sorted(self.zbierz().items(), key=lambda p: -p[1])
+        return ", ".join(f"{powod} ({ile}×)" for powod, ile in pozycje[:3])
+
+    def glowny(self) -> str:
+        pozycje = sorted(self.zbierz().items(), key=lambda p: -p[1])
+        return pozycje[0][0] if pozycje else ""
+
+
+POWODY = _Powody()
+
+
+class _Hamulec:
+    """Wspólna pauza dla wszystkich wątków, gdy archiwum mówi „za dużo tego naraz".
+
+    Dwadzieścia cztery równoległe żądania z jednego adresu to dla darmowego archiwum dużo,
+    a odpowiedzią bywa 429 albo zerwane połączenie. Ponawianie w tym samym tempie tylko
+    pogłębia problem: skoro limit dotyczy całego klienta, zwolnić muszą wszystkie wątki,
+    nie tylko ten, który akurat dostał odmowę. Pauza rośnie z każdą odmową i opada po
+    udanym pobraniu, więc pobieranie samo znajduje tempo, które archiwum akceptuje.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._do = 0.0          # monotoniczny czas, do którego wszyscy czekają
+        self._poziom = 0.0      # długość kolejnej pauzy w sekundach
+        # Przepustki równoległości. Hamulec zabiera je sobie, gdy archiwum się broni,
+        # i oddaje po udanych plikach — mniej przepustek to mniej żądań naraz.
+        self._bramka = threading.Semaphore(MAX_WORKERS)
+        self._zabrane = 0
+
+    def zwolnij(self, sugestia: Optional[float] = None) -> None:
+        """Nakłada pauzę po odmowie. `sugestia` to nagłówek Retry-After, jeśli przyszedł."""
+        with self._lock:
+            self._poziom = min(HAMULEC_MAX, max(1.0, self._poziom * 2))
+            pauza = max(self._poziom, sugestia or 0.0)
+            self._do = max(self._do, time.monotonic() + min(HAMULEC_MAX, pauza))
+            wolne = MAX_WORKERS - self._zabrane
+            do_zabrania = max(0, min(wolne // 2, wolne - MIN_WORKERS))
+
+        # Przepustki bierzemy bez czekania: te zajęte przez inne wątki wrócą do puli same,
+        # a blokowanie się tutaj zatrzymałoby pobieranie zamiast je spowolnić.
+        for _ in range(do_zabrania):
+            if not self._bramka.acquire(blocking=False):
+                break
+            with self._lock:
+                self._zabrane += 1
+
+    def przyspiesz(self) -> None:
+        """Udany plik znaczy, że tempo jest do przyjęcia — pauza opada, przepustka wraca."""
+        with self._lock:
+            self._poziom = 0.0 if self._poziom <= 1.0 else self._poziom / 2
+            oddaj = self._zabrane > 0
+            if oddaj:
+                self._zabrane -= 1
+        if oddaj:
+            self._bramka.release()
+
+    def poczekaj(self) -> None:
+        with self._lock:
+            zostalo = self._do - time.monotonic()
+        if zostalo > 0:
+            time.sleep(min(zostalo, HAMULEC_MAX))
+
+    @contextmanager
+    def bramka(self):
+        """Ogranicza liczbę żądań w locie do tego, na co archiwum pozwala."""
+        self._bramka.acquire()
+        try:
+            yield
+        finally:
+            self._bramka.release()
+
+    def rownolegle(self) -> int:
+        """Ile żądań wolno teraz mieć w locie — do wglądu i do testów."""
+        with self._lock:
+            return MAX_WORKERS - self._zabrane
+
+    def zapomnij(self) -> None:
+        with self._lock:
+            self._do, self._poziom = 0.0, 0.0
+            oddaj, self._zabrane = self._zabrane, 0
+        for _ in range(oddaj):
+            self._bramka.release()
+
+
+HAMULEC = _Hamulec()
+
+
+def _powod_wyjatku(exc: BaseException) -> str:
+    """Nazwa powodu, którą da się pokazać użytkownikowi, a nie ślad stosu."""
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "przekroczony czas oczekiwania"
+    if isinstance(exc, socket.gaierror):
+        return "nieznana nazwa serwera"
+    if isinstance(exc, ssl.SSLError):
+        return "błąd TLS"
+    if isinstance(exc, (ConnectionError, http.client.HTTPException)):
+        return "zerwane połączenie"
+    return type(exc).__name__
+
+
+def _retry_after(response: http.client.HTTPResponse) -> Optional[float]:
+    try:
+        return float(response.getheader("Retry-After") or "")
+    except (TypeError, ValueError):
+        return None
+
+
 class _ConnectionPool:
     """Połączenia HTTPS wielokrotnego użytku — po jednym na wątek roboczy.
 
@@ -423,23 +577,44 @@ def _fetch_hour(url: str) -> Optional[bytes]:
     przewracać całej roboty, ale musi zostać policzona i zgłoszona.
     """
     path = urllib.parse.urlsplit(url).path
+    powod = "nieznany powód"
 
-    for attempt in range(RETRIES):
+    proba, budzet = 0, RETRIES
+
+    while proba < budzet:
+        HAMULEC.poczekaj()      # limit dotyczy całego klienta, więc czekają wszystkie wątki
         try:
-            conn = _POOL.get()
-            conn.request("GET", path, headers={"User-Agent": USER_AGENT, "Connection": "keep-alive"})
-            response = conn.getresponse()
-            body = response.read()          # zawsze czytamy do końca, inaczej połączenie się zablokuje
+            with HAMULEC.bramka():
+                conn = _POOL.get()
+                conn.request("GET", path,
+                             headers={"User-Agent": USER_AGENT, "Connection": "keep-alive"})
+                response = conn.getresponse()
+                # Czytamy do końca zawsze, inaczej połączenie zostaje w stanie nie do użycia.
+                body = response.read()
             if response.status in (404, 410):
+                HAMULEC.przyspiesz()
                 return b""                  # weekend albo święto — normalne
             if response.status == 200:
+                HAMULEC.przyspiesz()
                 return body
+            powod = f"odpowiedź HTTP {response.status}"
+            if response.status in STATUSY_LIMITU:
+                HAMULEC.zwolnij(_retry_after(response))
+                budzet = min(RETRIES + PONOWIENIA_LIMITU, budzet + 1)
             _POOL.drop()                    # 5xx albo blokada — zacznijmy od świeżego połączenia
-        except Exception:
+        except Exception as exc:
+            powod = _powod_wyjatku(exc)
+            # Zerwane połączenie przy takiej równoległości bywa cichą postacią limitu żądań,
+            # więc traktujemy je tak samo: zwalniamy i dajemy dodatkowe podejście.
+            HAMULEC.zwolnij()
+            budzet = min(RETRIES + PONOWIENIA_LIMITU, budzet + 1)
             _POOL.drop()                    # zerwane albo przeterminowane połączenie
-        if attempt < RETRIES - 1:
-            time.sleep(0.3)
 
+        proba += 1
+        if proba < budzet:
+            time.sleep(PRZERWY_PONOWIEN[min(proba - 1, len(PRZERWY_PONOWIEN) - 1)])
+
+    POWODY.zglos(powod)
     return None
 
 
@@ -684,6 +859,7 @@ class DownloadResult:
     stopped_early: bool = False   # przerwane budżetem czasu, nie brakiem danych
     source: str = "ticks"         # 'candles' albo 'ticks' — co ostatecznie zadziałało
     skipped_days: list[date] = field(default_factory=list)   # doby, z których nie przyszło nic
+    reasons: dict[str, int] = field(default_factory=dict)    # dlaczego pliki nie przyszły
 
     @property
     def complete(self) -> bool:
@@ -734,6 +910,8 @@ def download_window(
     builder = BarBuilder(interval_minutes, price)
     attempted = 0
     dead_streak = 0        # ile dób z rzędu nie oddało ani jednego pliku
+    POWODY.wyczysc()       # powody liczymy w obrębie jednego pobrania, nie od uruchomienia
+    HAMULEC.zapomnij()
 
     # Jedna próba na całe pobieranie: jeśli gotowe świece są czytelne, każda doba kosztuje
     # jeden plik zamiast dwudziestu czterech.
@@ -831,12 +1009,7 @@ def download_window(
                 if result.hours_done == 0 and not tolerate_gaps and attempted >= MIN_PROB_AWARII:
                     # Nic się nie udało mimo wielu prób — archiwum jest po prostu nieosiągalne.
                     # Nie ma sensu mielić kolejnych tysięcy godzin, żeby to potwierdzić.
-                    raise DataError(
-                        "Nie udało się pobrać z Dukascopy ani jednego pliku "
-                        f"({attempted} prób, ostatnio dla dnia {day.isoformat()}). "
-                        "Użyj przycisku Sprawdź połączenie — powie, czy serwer w ogóle widzi "
-                        "datafeed.dukascopy.com. W razie blokady wgraj plik CSV ręcznie."
-                    )
+                    raise DataError(_opis_awarii(attempted, day))
 
                 # Dane już wcześniej przychodziły, więc to dziura w archiwum albo chwilowa
                 # blokada. Dziesięciu lat historii nie wolno wyrzucić przez jedną taką dobę:
@@ -859,7 +1032,48 @@ def download_window(
 
     _POOL.close_all()   # nie zostawiamy otwartych gniazd po zakończonym pobieraniu
     result.bars = builder.bars()
+    result.reasons = POWODY.zbierz()
     return result
+
+
+# Co zrobić z konkretnym powodem — po powodzie, nie po komunikacie. Kolejność ma znaczenie:
+# bierzemy pierwszy pasujący fragment, więc szczegółowe wpisy idą przed ogólnymi.
+RADY = (
+    ("HTTP 429", "Archiwum ogranicza liczbę żądań. Odczekaj kilka minut i ponów — pobrane "
+                 "godziny zostają w pamięci podręcznej, więc powtórka ruszy od tego miejsca."),
+    ("HTTP 403", "Archiwum odmawia dostępu temu serwerowi. Z wdrożenia bezserwerowego zdarza "
+                 "się to przy blokadzie całych zakresów adresów — pobierz dane lokalnie "
+                 "(tools/pobierz_archiwum.py) i wgraj plik CSV."),
+    ("HTTP 5", "Archiwum ma awarię po swojej stronie. Spróbuj ponownie za jakiś czas."),
+    ("przekroczony czas", "Serwer archiwum nie zdążył odpowiedzieć. Najczęściej to przeciążenie "
+                          "po jego stronie albo wolne łącze wdrożenia — ponów za kilka minut."),
+    ("nieznana nazwa", "Wdrożenie nie rozwiązuje nazwy datafeed.dukascopy.com — to blokada DNS "
+                       "albo brak wyjścia do sieci, nie problem z danymi."),
+    ("TLS", "Połączenie szyfrowane nie doszło do skutku — najczęściej proxy podstawia własny "
+            "certyfikat. Sprawdź konfigurację sieci wdrożenia."),
+    ("zerwane połączenie", "Połączenie urywa się w trakcie. Przy takiej równoległości bywa to "
+                           "cicha postać limitu żądań — ponów za kilka minut."),
+)
+
+
+def _opis_awarii(prob: int, dzien: date) -> str:
+    """Komunikat, który mówi, co się stało i co z tym zrobić.
+
+    Samo „nie udało się pobrać ani jednego pliku" nie daje się na nic zamienić. Powód
+    rozstrzyga o zupełnie innych krokach — limit żądań mija sam, blokada adresu wymaga
+    pobrania danych lokalnie, a błąd DNS znaczy, że wdrożenie w ogóle nie ma wyjścia
+    do sieci. Dlatego liczymy powody i nazywamy je wprost.
+    """
+    powody, glowny = POWODY.opis(), POWODY.glowny()
+    rada = next((tekst for fragment, tekst in RADY if fragment in glowny), "")
+    return (
+        f"Nie udało się pobrać z Dukascopy ani jednego pliku ({prob} prób, ostatnio dla dnia "
+        f"{dzien.isoformat()})."
+        + (f" Archiwum odpowiadało: {powody}." if powody else "")
+        + (f" {rada}" if rada else
+           " Użyj przycisku Sprawdź połączenie — powie, czy serwer w ogóle widzi "
+           "datafeed.dukascopy.com. W razie blokady wgraj plik CSV ręcznie.")
+    )
 
 
 def download_bars(

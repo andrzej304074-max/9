@@ -103,6 +103,19 @@ plik i mówi wprost, czy archiwum jest osiągalne — przydaje się, gdy pobiera
 Raportuje też, czy archiwum udostępnia gotowe świece minutowe: jeśli tak, pobieranie idzie
 nimi i jest około dwudziestokrotnie szybsze.
 
+Gdy plik nie przychodzi, aplikacja **liczy powody i nazywa je wprost**: „odpowiedź HTTP 429",
+„przekroczony czas oczekiwania", „nieznana nazwa serwera". Powód rozstrzyga o zupełnie różnych
+krokach, więc komunikat od razu mówi, co z tym zrobić — limit żądań mija sam, blokada adresu
+wymaga pobrania danych lokalnie, a błąd DNS znaczy, że wdrożenie w ogóle nie ma wyjścia do
+sieci. Odpowiedź 404 nie jest porażką: to normalne „tego pliku tu nie ma".
+
+Osobno działa **hamulec**. Dwadzieścia cztery żądania naraz z jednego adresu w serwerowni
+wyglądają dla darmowego archiwum jak nadużycie i potrafią pójść odmową w całości — stąd
+pobieranie, które z laptopa działa, a z wdrożenia w chmurze pada. Po odmowie wszystkie wątki
+dostają wspólną pauzę (rosnącą, z uwzględnieniem nagłówka `Retry-After`), a strumień się
+zwęża; udane pliki oddają przepustki z powrotem. Pobieranie samo znajduje tempo, które
+archiwum akceptuje, zamiast poddać się przy pierwszej fali odmów.
+
 Aplikacja **nie ufa formatowi plików ze świecami na słowo** — nie jest on oficjalnie
 udokumentowany. Przed pierwszym użyciem pobiera jedną dobę świec i jedną godzinę ticków
 z tej samej doby, składa ticki w świece minutowe i porównuje. Zgadza się — korzysta;

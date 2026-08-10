@@ -456,6 +456,28 @@ def test_a_dead_day_in_the_middle_does_not_kill_the_instrument(client, monkeypat
     assert library.entries()[0]["bars"] > 0
 
 
+def test_the_gap_note_names_why_the_files_did_not_come(client, monkeypatch):
+    """„Pominięto 1 dobę" bez powodu nie da się na nic zamienić: limit żądań mija sam,
+    blokada adresu wymaga pobrania danych lokalnie. Powód ma stać przy dziurze."""
+    import app.dukascopy as duka
+
+    braki = martwe_doby({"2024-01-03"})
+
+    def z_powodem(url: str):
+        wynik = braki(url)
+        if wynik is None:
+            duka.POWODY.zglos("odpowiedź HTTP 429")
+        return wynik
+
+    monkeypatch.setattr(duka, "_fetch_hour", z_powodem)
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+    zacznij(client, years=1)
+    pozycja = dokoncz(client)["plan"]["instruments"][0]
+    assert pozycja["state"] == "done"
+    assert "HTTP 429" in pozycja["note"]
+
+
 def test_a_gap_is_named_in_the_saved_entry(client, monkeypatch):
     """Zbiór z dziurą trafia do biblioteki, ale użytkownik ma o niej wiedzieć."""
     import app.dukascopy as duka

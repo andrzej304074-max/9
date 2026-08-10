@@ -182,6 +182,7 @@ def zacznij(instrumenty: list[str], lata: int, interwal: int, cena: str) -> dict
                 "skipped_days": 0,      # doby, z których nie przyszło nic — dziury w danych
                 "bezowocne": 0,         # odcinki z rzędu bez ani jednej świecy
                 "odmowy": 0,            # odmowy archiwum z rzędu, każda pomija jedną dobę
+                "powody": {},           # dlaczego pliki nie przyszły — powód → ile razy
                 "dataset_id": None,
                 "note": "",
             }
@@ -365,6 +366,11 @@ def _kawalek(plan: dict[str, Any], pozycja: dict[str, Any], koniec_budzetu: floa
                                _bez_naglowka(wynik.bars))
         pozycja["bars"] += len(wynik.bars)
     pozycja["failed_hours"] += wynik.failed_hours
+    # Powody z całego pobrania, nie tylko z ostatniego odcinka — dziura zgłoszona na końcu
+    # ma powiedzieć, co ją spowodowało, a to widać dopiero po zsumowaniu odcinków.
+    powody = pozycja.setdefault("powody", {})
+    for powod, ile in wynik.reasons.items():
+        powody[powod] = powody.get(powod, 0) + ile
     pozycja["skipped_days"] = pozycja.get("skipped_days", 0) + len(wynik.skipped_days)
 
     # Odcinek, który nie przyniósł ani jednej świecy, a same puste doby, to sygnał blokady.
@@ -457,11 +463,21 @@ def _uwaga_o_dziurach(pozycja: dict[str, Any]) -> str:
         return (f"Pominięto {pominiete} {_odmiana(pominiete, 'dobę', 'doby', 'dób')} — archiwum "
                 f"nie oddało z {'niej' if jedna else 'nich'} nic i "
                 f"{'ten dzień nie wejdzie' if jedna else 'te dni nie wejdą'} do backtestu. "
-                "Powtórz pobranie, żeby uzupełnić braki.")
+                f"Powtórz pobranie, żeby uzupełnić braki.{_powod(pozycja)}")
     if godziny:
         return (f"Nie udało się pobrać {godziny} "
-                f"{'godziny' if godziny == 1 else 'godzin'} — reszta jest kompletna.")
+                f"{'godziny' if godziny == 1 else 'godzin'} — reszta jest "
+                f"kompletna.{_powod(pozycja)}")
     return ""
+
+
+def _powod(pozycja: dict[str, Any]) -> str:
+    """Najczęstszy powód, dla którego pliki nie przyszły — dopisek do notatki o dziurach."""
+    powody = pozycja.get("powody") or {}
+    if not powody:
+        return ""
+    glowny = max(powody.items(), key=lambda p: p[1])
+    return f" Najczęstszy powód: {glowny[0]} ({glowny[1]}×)."
 
 
 def _odmiana(ile: int, jeden: str, kilka: str, wiele: str) -> str:

@@ -1056,3 +1056,288 @@ def test_the_failure_message_counts_every_attempt(tmp_path, monkeypatch):
     assert f"{duka.MIN_PROB_AWARII}" in str(blad.value) or "prób" in str(blad.value)
     liczba = int(str(blad.value).split(" prób")[0].split("(")[-1])
     assert liczba >= duka.MIN_PROB_AWARII
+
+
+# --- co dokładnie poszło nie tak ------------------------------------------------------
+#
+# Zgłoszenie z wdrożenia: „nie udało się pobrać ani jednego pliku (27 prób)". Komunikat
+# nie dawał się na nic zamienić — nie wiadomo było, czy archiwum ogranicza liczbę żądań
+# (mija samo), blokuje serwerownię (trzeba pobrać lokalnie), czy wdrożenie nie ma wyjścia
+# do sieci (trzeba zmienić konfigurację). Powód liczymy więc i nazywamy wprost.
+
+
+class _Odpowiedz:
+    """Odpowiedź HTTP na tyle prawdziwa, ile potrzebuje `_fetch_hour`."""
+
+    def __init__(self, status: int, body: bytes = b"", naglowki: dict | None = None):
+        self.status = status
+        self._body = body
+        self._naglowki = naglowki or {}
+
+    def read(self):
+        return self._body
+
+    def getheader(self, nazwa, domyslnie=None):
+        return self._naglowki.get(nazwa, domyslnie)
+
+
+class _Polaczenie:
+    """Połączenie oddające zaplanowane odpowiedzi; wyjątek na liście zostaje rzucony."""
+
+    def __init__(self, plan):
+        self._plan = list(plan)
+        self.zapytania = 0
+
+    def request(self, *a, **k):
+        self.zapytania += 1
+
+    def getresponse(self):
+        wynik = self._plan.pop(0) if self._plan else _Odpowiedz(200, b"ok")
+        if isinstance(wynik, BaseException):
+            raise wynik
+        return wynik
+
+
+def podstaw_polaczenie(monkeypatch, plan):
+    import app.dukascopy as duka
+
+    polaczenie = _Polaczenie(plan)
+
+    class _Pula:
+        def get(self): return polaczenie
+        def drop(self): pass
+        def close_all(self): pass
+
+    monkeypatch.setattr(duka, "_POOL", _Pula())
+    monkeypatch.setattr(duka, "PRZERWY_PONOWIEN", (0, 0, 0))
+    duka.POWODY.wyczysc()
+    duka.HAMULEC.zapomnij()
+    return polaczenie
+
+
+def test_a_rate_limited_hour_is_recorded_as_such(monkeypatch):
+    import app.dukascopy as duka
+
+    polaczenie = podstaw_polaczenie(
+        monkeypatch, [_Odpowiedz(429)] * (duka.RETRIES + duka.PONOWIENIA_LIMITU))
+    assert duka._fetch_hour("https://x/y/00h_ticks.bi5") is None
+    assert duka.POWODY.glowny() == "odpowiedź HTTP 429"
+    # Limit żądań mija sam, więc dostaje więcej podejść niż zwykła wywrotka — pierwsza fala
+    # żądań inaczej przepalałaby cały budżet, zanim hamulec zdąży zwęzić strumień.
+    assert polaczenie.zapytania == duka.RETRIES + duka.PONOWIENIA_LIMITU
+
+
+def test_a_missing_file_is_not_a_failure(monkeypatch):
+    """404 to normalna odpowiedź — weekend, święto, dziura w archiwum. Nie ma czego zgłaszać."""
+    import app.dukascopy as duka
+
+    podstaw_polaczenie(monkeypatch, [_Odpowiedz(404)])
+    assert duka._fetch_hour("https://x/y/00h_ticks.bi5") == b""
+    assert duka.POWODY.zbierz() == {}
+
+
+def test_a_timeout_is_named_by_what_it_is(monkeypatch):
+    import socket
+
+    import app.dukascopy as duka
+
+    podstaw_polaczenie(monkeypatch,
+                       [socket.timeout()] * (duka.RETRIES + duka.PONOWIENIA_LIMITU))
+    assert duka._fetch_hour("https://x/y/00h_ticks.bi5") is None
+    assert duka.POWODY.glowny() == "przekroczony czas oczekiwania"
+
+
+def test_a_dns_failure_is_named_by_what_it_is(monkeypatch):
+    import socket
+
+    import app.dukascopy as duka
+
+    podstaw_polaczenie(monkeypatch,
+                       [socket.gaierror("nie ma nazwy")] * (duka.RETRIES + duka.PONOWIENIA_LIMITU))
+    assert duka._fetch_hour("https://x/y/00h_ticks.bi5") is None
+    assert duka.POWODY.glowny() == "nieznana nazwa serwera"
+
+
+def test_a_retry_that_succeeds_reports_nothing(monkeypatch):
+    """Ponowienie jest po to, żeby chwilowa wywrotka nie kosztowała pliku."""
+    import app.dukascopy as duka
+
+    podstaw_polaczenie(monkeypatch, [_Odpowiedz(500), _Odpowiedz(200, b"dane")])
+    assert duka._fetch_hour("https://x/y/00h_ticks.bi5") == b"dane"
+    assert duka.POWODY.zbierz() == {}
+
+
+def test_the_throttle_narrows_concurrency_when_the_archive_pushes_back(monkeypatch):
+    """Dwadzieścia cztery żądania naraz z jednego adresu to dla darmowego archiwum dużo.
+    Odmowa ma zwężać strumień, a nie tylko opóźniać kolejne dobijanie się."""
+    import app.dukascopy as duka
+
+    duka.HAMULEC.zapomnij()
+    poczatek = duka.HAMULEC.rownolegle()
+    assert poczatek == duka.MAX_WORKERS
+
+    duka.HAMULEC.zwolnij()
+    assert duka.HAMULEC.rownolegle() < poczatek
+
+    for _ in range(duka.MAX_WORKERS):
+        duka.HAMULEC.przyspiesz()
+    assert duka.HAMULEC.rownolegle() == duka.MAX_WORKERS      # udane pliki oddają przepustki
+    duka.HAMULEC.zapomnij()
+
+
+def test_the_throttle_never_closes_the_stream_completely(monkeypatch):
+    """Zwężanie bez dna zatrzymałoby pobieranie zamiast je spowolnić."""
+    import app.dukascopy as duka
+
+    duka.HAMULEC.zapomnij()
+    for _ in range(50):
+        duka.HAMULEC.zwolnij()
+    assert duka.HAMULEC.rownolegle() >= duka.MIN_WORKERS
+    duka.HAMULEC.zapomnij()
+
+
+def test_retry_after_is_honoured(monkeypatch):
+    """Skoro archiwum mówi, ile czekać, nie zgadujemy."""
+    import app.dukascopy as duka
+
+    duka.HAMULEC.zapomnij()
+    podstaw_polaczenie(monkeypatch, [_Odpowiedz(429, naglowki={"Retry-After": "5"})])
+    duka.HAMULEC.zwolnij(5.0)
+    zmierzone = []
+    monkeypatch.setattr(duka.time, "sleep", lambda s: zmierzone.append(s))
+    duka.HAMULEC.poczekaj()
+    assert zmierzone and 4.0 <= zmierzone[0] <= 5.0
+    duka.HAMULEC.zapomnij()
+
+
+def _awaria_z_powodem(monkeypatch, powod: str):
+    """Pobieranie, w którym każdy plik pada z zadanego powodu."""
+    import app.dukascopy as duka
+
+    def _fetch(url: str):
+        if "candles" in url:
+            return b""
+        duka.POWODY.zglos(powod)
+        return None
+
+    monkeypatch.setattr(duka, "_fetch_hour", _fetch)
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+
+def test_the_failure_message_names_the_reason(tmp_path, monkeypatch):
+    import app.dukascopy as duka
+
+    _awaria_z_powodem(monkeypatch, "odpowiedź HTTP 429")
+    with pytest.raises(DataError) as blad:
+        duka.download_window(start=date(2016, 8, 7), end=date(2016, 8, 31), cache_dir=tmp_path)
+
+    tekst = str(blad.value)
+    assert "HTTP 429" in tekst
+    assert "ogranicza liczbę żądań" in tekst          # co z tym zrobić, nie tylko co się stało
+
+
+def test_a_provider_block_tells_the_user_to_download_locally(tmp_path, monkeypatch):
+    """403 z wdrożenia bezserwerowego to najczęściej blokada całych zakresów adresów —
+    czekanie nic nie da, trzeba pobrać dane lokalnie."""
+    import app.dukascopy as duka
+
+    _awaria_z_powodem(monkeypatch, "odpowiedź HTTP 403")
+    with pytest.raises(DataError) as blad:
+        duka.download_window(start=date(2016, 8, 7), end=date(2016, 8, 31), cache_dir=tmp_path)
+    assert "pobierz_archiwum" in str(blad.value)
+
+
+def test_a_dns_failure_points_at_the_deployment_not_the_data(tmp_path, monkeypatch):
+    import app.dukascopy as duka
+
+    _awaria_z_powodem(monkeypatch, "nieznana nazwa serwera")
+    with pytest.raises(DataError) as blad:
+        duka.download_window(start=date(2016, 8, 7), end=date(2016, 8, 31), cache_dir=tmp_path)
+    assert "DNS" in str(blad.value) or "wyjścia do sieci" in str(blad.value)
+
+
+def test_an_unnamed_reason_still_points_at_the_connection_check(tmp_path, monkeypatch):
+    """Gdy powodu nie umiemy nazwać, zostaje stara, sprawdzona rada."""
+    import app.dukascopy as duka
+
+    _awaria_z_powodem(monkeypatch, "coś zupełnie nowego")
+    with pytest.raises(DataError, match="Sprawdź połączenie"):
+        duka.download_window(start=date(2016, 8, 7), end=date(2016, 8, 31), cache_dir=tmp_path)
+
+
+def test_reasons_are_reported_on_a_download_that_finished(tmp_path, monkeypatch):
+    """Pobranie z dziurami też ma powiedzieć, skąd się wzięły."""
+    import app.dukascopy as duka
+
+    def _fetch(url: str):
+        if "candles" in url:
+            return b""
+        if url.endswith("03h_ticks.bi5"):
+            duka.POWODY.zglos("odpowiedź HTTP 429")
+            return None
+        return make_bi5([(0, 126_350, 126_340)])
+
+    monkeypatch.setattr(duka, "_fetch_hour", _fetch)
+    wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 3), cache_dir=tmp_path)
+
+    assert wynik.bars
+    assert wynik.reasons == {"odpowiedź HTTP 429": 2}
+
+
+def test_a_rate_limited_archive_is_survived_by_slowing_down(tmp_path, monkeypatch):
+    """Sedno zgłoszenia z wdrożenia: pobieranie z serwera w chmurze pada w całości, choć
+    z laptopa działa. Różnica to tempo — dwadzieścia cztery żądania naraz z jednego adresu
+    w serwerowni wyglądają dla darmowego archiwum jak nadużycie i lecą odmową.
+
+    Archiwum w tym teście odmawia dokładnie wtedy, gdy w locie jest więcej żądań, niż
+    dopuszcza. Pobieranie ma z tego wyjść samo — przez zwolnienie, nie przez poddanie się.
+    Fałszujemy tu połączenie, a nie `_fetch_hour`, bo to właśnie w nim siedzi hamulec.
+    """
+    import threading
+
+    import app.dukascopy as duka
+
+    class _PulaZLimitem:
+        """Archiwum, które odmawia, gdy zapytań w locie jest więcej niż `limit`."""
+
+        def __init__(self, limit: int, payload: bytes):
+            self.limit, self.payload = limit, payload
+            self.w_locie = self.szczyt = self.odmowy = self.udane = 0
+            self.zamek = threading.Lock()
+
+        def get(self): return self
+        def drop(self): pass
+        def close_all(self): pass
+
+        def request(self, *a, **k):
+            with self.zamek:
+                self.w_locie += 1
+                self.szczyt = max(self.szczyt, self.w_locie)
+            time.sleep(0.005)      # bez odrobiny opóźnienia żądania nigdy się nie nakładają
+
+        def getresponse(self):
+            with self.zamek:
+                za_duzo = self.w_locie > self.limit
+                self.w_locie -= 1
+                if za_duzo:
+                    self.odmowy += 1
+                else:
+                    self.udane += 1
+            return _Odpowiedz(429) if za_duzo else _Odpowiedz(200, self.payload)
+
+    pula = _PulaZLimitem(3, make_bi5([(0, 126_350, 126_340)]))
+    monkeypatch.setattr(duka, "_POOL", pula)
+    monkeypatch.setattr(duka, "PRZERWY_PONOWIEN", (0.01, 0.01, 0.01))
+    monkeypatch.setattr(duka, "HAMULEC_MAX", 0.05)   # test ma trwać sekundy, nie minuty
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    duka.POWODY.wyczysc()
+    duka.HAMULEC.zapomnij()
+
+    wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 4),
+                                 cache_dir=tmp_path, use_candles=False)
+
+    assert wynik.bars                                 # nie poddało się
+    assert wynik.hours_done == wynik.hours_total      # ostatecznie przyszło wszystko
+    assert pula.odmowy                                # limit naprawdę się odezwał
+    assert duka.HAMULEC.rownolegle() < duka.MAX_WORKERS   # strumień faktycznie się zwęził
+    duka.HAMULEC.zapomnij()
