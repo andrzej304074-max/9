@@ -214,6 +214,12 @@ Nieudany instrument da się wznowić przyciskiem **„Ponów nieudane"**: rusza 
 nie od zera, i nie tyka tych, które trafiły już do biblioteki. Od początku zaczyna tylko
 instrument, który przeszedł cały zakres bez ani jednej świecy — tam nie ma czego wznawiać.
 
+Nagłówek panelu **„Zapisane dane"** podaje skrót commita, z którego zbudowano wdrożenie
+(np. `wersja 4899551`; na Vercelu bierze się ze zmiennej `VERCEL_GIT_COMMIT_SHA`, poza nim
+można ustawić `BACKTESTER_BUILD`). To samo jest w `/api/diagnostics` w polu `runtime.build`.
+Przy zgłaszaniu błędu warto go podać: bez niego nie da się odróżnić „poprawka nie działa"
+od „poprawka nie weszła", bo komunikat wygląda tak samo w obu przypadkach.
+
 Plan przeżywa wdrożenie, a zapisana w nim notatka o błędzie — nie: pochodzi z kodu, który
 mógł uznawać za awarię coś, co dziś jest zwykłą dziurą. Dlatego plan nosi **numer wersji
 zasad** (`archive_rules` w `/api/diagnostics`). Po jego podbiciu nieudane instrumenty ze

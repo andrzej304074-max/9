@@ -1071,10 +1071,13 @@ async function refreshLibrary() {
   $('library-card').hidden = false;
 
   const gdzie = usage.backend ? ` · magazyn: ${usage.backend}` : '';   // trafia do textContent
+  // Skrót commita w widocznym miejscu: przy zgłoszeniu błędu od razu wiadomo, czy serwer
+  // ma już poprawkę, czy komunikat pochodzi ze starszego wdrożenia.
+  const build = state.runtime.build ? ` · wersja ${state.runtime.build}` : '';
   $('library-sub').textContent = state.library.length
     ? `${state.library.length} ${state.library.length === 1 ? 'zbiór' : 'zbiorów'} · `
-      + `${formatBytes(usage.bytes || 0)}${gdzie} · kliknij „Wczytaj”, żeby wrócić do danych bez pobierania`
-    : `Biblioteka jest pusta${gdzie}.`;
+      + `${formatBytes(usage.bytes || 0)}${gdzie}${build} · kliknij „Wczytaj”, żeby wrócić do danych bez pobierania`
+    : `Biblioteka jest pusta${gdzie}${build}.`;
 
   const warning = $('library-warning');
   warning.hidden = data.persistent !== false;

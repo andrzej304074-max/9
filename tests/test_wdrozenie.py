@@ -374,3 +374,29 @@ def test_a_broken_date_is_refused_clearly(monkeypatch, tmp_path):
     odp = klient.get(f"/api/datasets/{zbior['dataset_id']}/candles?date=30-07-2026")
     assert odp.status_code == 400
     assert "RRRR-MM-DD" in odp.json()["detail"]
+
+
+def test_the_deployment_reports_which_build_it_runs(monkeypatch, tmp_path):
+    """Przy zgłoszeniu błędu pierwsze pytanie brzmi „czy serwer ma już poprawkę".
+
+    Bez tej informacji nie da się odróżnić „poprawka nie działa" od „poprawka nie weszła",
+    bo komunikat wygląda tak samo w obu przypadkach.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_SHA", "4899551abcdef0123456789")
+    module = zaladuj(monkeypatch, tmp_path / "stan")
+    client = TestClient(module.app)
+
+    assert client.get("/api/options").json()["runtime"]["build"] == "4899551"
+    assert client.get("/api/diagnostics").json()["runtime"]["build"] == "4899551"
+
+
+def test_a_deployment_without_a_build_stamp_says_nothing_instead_of_guessing(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    for nazwa in ("VERCEL_GIT_COMMIT_SHA", "BACKTESTER_BUILD", "GIT_COMMIT_SHA"):
+        monkeypatch.delenv(nazwa, raising=False)
+    module = zaladuj(monkeypatch, tmp_path / "stan")
+
+    assert TestClient(module.app).get("/api/options").json()["runtime"]["build"] == ""

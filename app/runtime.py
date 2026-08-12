@@ -97,7 +97,23 @@ def describe() -> dict[str, object]:
         "max_upload_bytes": MAX_UPLOAD_BYTES,
         "max_request_seconds": MAX_REQUEST_SECONDS,
         "dukascopy_max_days": dukascopy_day_limit(),
+        "build": wersja_wdrozenia(),
     }
+
+
+def wersja_wdrozenia() -> str:
+    """Skrót commita, z którego zbudowano to wdrożenie — albo pusty łańcuch lokalnie.
+
+    Po co: przy zgłoszeniu błędu pierwsze pytanie brzmi „czy serwer ma już poprawkę".
+    Bez tej informacji nie da się odróżnić „poprawka nie działa" od „poprawka nie weszła",
+    a komunikat wygląda tak samo w obu przypadkach. Vercel podaje skrót commita w zmiennej
+    środowiskowej; poza nim można ją ustawić samodzielnie.
+    """
+    skrot = (os.environ.get("VERCEL_GIT_COMMIT_SHA")
+             or os.environ.get("BACKTESTER_BUILD")
+             or os.environ.get("GIT_COMMIT_SHA")
+             or "")
+    return skrot[:7]
 
 
 def dukascopy_day_limit() -> int:
