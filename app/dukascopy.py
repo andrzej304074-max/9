@@ -471,6 +471,13 @@ class _Hamulec:
     def poczekaj(self) -> None:
         with self._lock:
             zostalo = self._do - time.monotonic()
+        if zostalo <= 0:
+            return
+        # Pauza nie może przeciągnąć kroku poza jego budżet — lepiej spróbować od razu
+        # i skończyć z zapisanym postępem niż przespać limit żądania.
+        budzet = TERMIN.zostalo()
+        if budzet is not None:
+            zostalo = min(zostalo, max(0.0, budzet))
         if zostalo > 0:
             time.sleep(min(zostalo, HAMULEC_MAX))
 
@@ -497,6 +504,58 @@ class _Hamulec:
 
 
 HAMULEC = _Hamulec()
+
+
+class _Termin:
+    """Do kiedy wolno pracować nad bieżącym pobraniem.
+
+    Budżet kroku sprawdzany był tylko *między* dobami, a to wystarcza wyłącznie wtedy, gdy
+    archiwum odpowiada szybko. Gdy milczy, jedna doba to 24 pliki × kilka podejść × pełny
+    timeout — czyli grubo ponad limit całego żądania. Krok nie kończył się więc własnym
+    „zabrakło czasu", tylko błędem platformy, a przeglądarka dostawała pustkę zamiast
+    zapisanego postępu. Termin jest więc widoczny aż na poziomie pojedynczego pliku.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._do: Optional[float] = None
+        self._odpuszczanie = False
+
+    def ustaw(self, kiedy: Optional[float]) -> None:
+        with self._lock:
+            self._do = kiedy
+            self._odpuszczanie = False
+
+    def pozwol_odpuszczac(self) -> None:
+        """Od tej chwili wolno rezygnować z plików, na które nie ma już czasu.
+
+        Pierwsza doba pobrania jest z tego wyłączona. Krok bywa wywoływany z budżetem
+        wyczerpanym już na starcie — a wtedy odpuszczenie wszystkiego wyglądałoby jak
+        awaria archiwum, choć nikt o nic nie zapytał, i pobieranie stanęłoby w miejscu.
+        """
+        with self._lock:
+            self._odpuszczanie = True
+
+    def odpuszczamy(self) -> bool:
+        with self._lock:
+            wolno = self._odpuszczanie
+        return wolno and self.minal()
+
+    def zostalo(self) -> Optional[float]:
+        with self._lock:
+            return None if self._do is None else self._do - time.monotonic()
+
+    def starczy_na(self, sekund: float) -> bool:
+        """Czy zostało dość czasu na kolejne podejście trwające tyle co poprzednie."""
+        zostalo = self.zostalo()
+        return zostalo is None or zostalo >= sekund
+
+    def minal(self) -> bool:
+        zostalo = self.zostalo()
+        return zostalo is not None and zostalo <= 0
+
+
+TERMIN = _Termin()
 
 
 def _powod_wyjatku(exc: BaseException) -> str:
@@ -599,6 +658,12 @@ def _fetch_hour(url: str) -> Optional[bytes]:
     proba, budzet = 0, RETRIES
 
     while proba < budzet:
+        # Gdy budżet kroku jest wyczerpany, nie ma po co pytać: pliki czekające w kolejce
+        # zwolnionego hamulca zjadłyby po pełnym timeoucie każdy. Dobę i tak trzeba będzie
+        # powtórzyć, więc lepiej oddać sterowanie od razu.
+        if TERMIN.odpuszczamy():
+            POWODY.zglos("zabrakło czasu w tym kroku")
+            return None
         HAMULEC.poczekaj()      # limit dotyczy całego klienta, więc czekają wszystkie wątki
         try:
             with HAMULEC.bramka():
@@ -628,8 +693,14 @@ def _fetch_hour(url: str) -> Optional[bytes]:
             _POOL.drop()                    # zerwane albo przeterminowane połączenie
 
         proba += 1
-        if proba < budzet:
-            time.sleep(PRZERWY_PONOWIEN[min(proba - 1, len(PRZERWY_PONOWIEN) - 1)])
+        przerwa = PRZERWY_PONOWIEN[min(proba - 1, len(PRZERWY_PONOWIEN) - 1)]
+        # Kolejne podejście ma sens tylko wtedy, gdy zdąży się odbyć. Bez tego jeden plik
+        # przy milczącym archiwum zjadał kilkakrotność limitu żądania — a wtedy przepadał
+        # cały krok razem z postępem, zamiast skończyć się uczciwym „zabrakło czasu".
+        if proba < budzet and TERMIN.starczy_na(przerwa + TIMEOUT_SECONDS):
+            time.sleep(przerwa)
+            continue
+        break
 
     POWODY.zglos(powod)
     return None
@@ -642,6 +713,11 @@ def probe(instrument: str = DEFAULT_INSTRUMENT) -> dict[str, object]:
     archiwum jest w ogóle osiągalne z tego środowiska, jak szybko odpowiada i co zwraca.
     Nigdy nie rzuca wyjątkiem — diagnostyka, która sama się wywraca, jest bezużyteczna.
     """
+    # Diagnostyka ma własny, hojniejszy budżet i nie może odziedziczyć terminu po pobraniu,
+    # które właśnie się wywróciło — inaczej pytałaby raz, krótko i nie o to.
+    TERMIN.ustaw(None)
+    HAMULEC.zapomnij()
+
     # Wtorek, środek sesji londyńskiej — godzina, która na pewno ma notowania.
     when = datetime(2024, 1, 2, 10, tzinfo=timezone.utc)
     url = hour_url(instrument, when)
@@ -999,6 +1075,7 @@ def download_window(
     dead_streak = 0        # ile dób z rzędu nie oddało ani jednego pliku
     POWODY.wyczysc()       # powody liczymy w obrębie jednego pobrania, nie od uruchomienia
     HAMULEC.zapomnij()
+    TERMIN.ustaw(deadline)  # budżet ma być widoczny aż przy pojedynczym pliku
 
     # Jedna próba na całe pobieranie: jeśli gotowe świece są czytelne, każda doba kosztuje
     # jeden plik zamiast dwudziestu czterech.
@@ -1065,6 +1142,10 @@ def download_window(
             if index and deadline is not None and time.monotonic() > deadline:
                 result.stopped_early = True
                 break
+            if index:
+                # Pierwsza doba zawsze dostaje pełną szansę; od drugiej wolno już odpuszczać
+                # pliki, na które budżet kroku nie starczy.
+                TERMIN.pozwol_odpuszczac()
 
             hours_today = hours_in_range(day, day)
             failed_today = 0
@@ -1089,6 +1170,18 @@ def download_window(
                         when, payload = outcome
                         builder.feed_bi5(payload, when, scale)  # od razu w świece, bez listy ticków
                         result.hours_done += 1
+
+            # Doba przerwana wyczerpanym budżetem to nie jest dziura w archiwum, tylko koniec
+            # czasu tego kroku. Zapisanie jej jako pominiętej utrwaliłoby brak danych, których
+            # nikt nawet nie próbował pobrać — wracamy więc do niej przy następnym kroku.
+            # Pierwszej doby to nie dotyczy, tak samo jak sprawdzania budżetu wyżej: przy
+            # ciasnym limicie krok nie posunąłby się nigdy i pobieranie stanęłoby w miejscu.
+            if index and failed_today and TERMIN.minal():
+                # Doba wraca do kolejki w całości, więc jej niepowodzenia nie mogą zostać
+                # w statystyce — inaczej gotowy zbiór donosiłby o dziurach, których nie ma.
+                result.failed_hours -= failed_today
+                result.stopped_early = True
+                break
 
             # Doba, z której nie przyszedł ani jeden plik, znaczy co innego na początku,
             # a co innego w środku wieloletniego pobierania.
@@ -1118,6 +1211,7 @@ def download_window(
                 progress(result.hours_done + result.failed_hours, result.hours_total)
 
     _POOL.close_all()   # nie zostawiamy otwartych gniazd po zakończonym pobieraniu
+    TERMIN.ustaw(None)
     result.bars = builder.bars()
     result.reasons = POWODY.zbierz()
     return result

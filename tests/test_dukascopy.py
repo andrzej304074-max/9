@@ -1502,3 +1502,169 @@ def test_fast_refusals_still_get_every_attempt(monkeypatch):
     monkeypatch.setattr(duka.urllib.request, "urlopen", szybkie_503)
     monkeypatch.setattr(duka, "PRZERWY_DIAGNOZY", (0, 0))
     assert duka.probe()["attempts"] == duka.PROBY_DIAGNOZY
+
+
+# --- budżet kroku wobec milczącego archiwum --------------------------------------------
+
+
+def test_a_silent_archive_does_not_blow_the_request_budget(tmp_path, monkeypatch):
+    """Sedno zgłoszenia „przycisk Wznów nie działa".
+
+    Budżet kroku sprawdzany był tylko *między* dobami. Gdy archiwum milczy, jedna doba to
+    24 pliki × kilka podejść × pełny timeout — czyli wielokrotność limitu całego żądania.
+    Krok nie kończył się więc własnym „zabrakło czasu", tylko błędem platformy, a pętla
+    w przeglądarce ginęła, zanim cokolwiek zapisała. Z zewnątrz wyglądało to tak, jakby
+    kliknięcie nic nie robiło.
+    """
+    import app.dukascopy as duka
+
+    zegar = {"teraz": 1000.0}
+    monkeypatch.setattr(duka.time, "monotonic", lambda: zegar["teraz"])
+    monkeypatch.setattr(duka.time, "sleep", lambda s: zegar.__setitem__("teraz", zegar["teraz"] + s))
+
+    class _Milczaca:
+        """Każde żądanie zjada pełny timeout i kończy się ciszą."""
+
+        def get(self): return self
+        def drop(self): pass
+        def close_all(self): pass
+        def request(self, *a, **k):
+            zegar["teraz"] += duka.TIMEOUT_SECONDS
+        def getresponse(self):
+            raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(duka, "_POOL", _Milczaca())
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+    monkeypatch.setattr(duka, "MAX_WORKERS", 1)     # najgorszy przypadek: bez równoległości
+
+    budzet = 39.0                                   # tyle, ile daje krok na Vercelu
+    start = zegar["teraz"]
+    wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 12),
+                                 cache_dir=tmp_path, deadline=start + budzet,
+                                 use_candles=False, tolerate_gaps=True)
+
+    zuzyte = zegar["teraz"] - start
+    # Jedna doba może przekroczyć budżet, bo sprawdzamy go między dobami — ale nie
+    # wielokrotnie, bo inaczej platforma ubija żądanie razem z postępem.
+    assert zuzyte < budzet + 24 * duka.TIMEOUT_SECONDS, f"krok zajął {zuzyte:.0f} s"
+    assert wynik.stopped_early                      # uczciwe „zabrakło czasu", nie awaria
+
+
+def test_time_running_out_is_not_recorded_as_a_hole_in_the_archive(tmp_path, monkeypatch):
+    """Doba, której nie zdążyliśmy pobrać, musi wrócić przy następnym kroku.
+
+    Zapisanie jej jako pominiętej utrwaliłoby brak danych, których nikt nawet nie próbował
+    ściągnąć — a użytkownik zobaczyłby dziurę tam, gdzie archiwum jest w porządku.
+    """
+    import app.dukascopy as duka
+
+    zegar = {"teraz": 1000.0}
+    monkeypatch.setattr(duka.time, "monotonic", lambda: zegar["teraz"])
+    monkeypatch.setattr(duka.time, "sleep", lambda s: zegar.__setitem__("teraz", zegar["teraz"] + s))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+    dzien_pierwszy = date(2024, 1, 2)
+
+    def _fetch(url: str):
+        if "candles" in url:
+            return b""
+        if f"/{dzien_pierwszy.day:02d}/" in url:
+            return make_bi5([(0, 126_350, 126_340)])
+        zegar["teraz"] += duka.TIMEOUT_SECONDS      # kolejne doby już tylko zjadają czas
+        return None
+
+    monkeypatch.setattr(duka, "_fetch_hour", _fetch)
+
+    wynik = duka.download_window(start=dzien_pierwszy, end=date(2024, 1, 12),
+                                 cache_dir=tmp_path, deadline=zegar["teraz"] + 30,
+                                 use_candles=False, tolerate_gaps=True)
+
+    assert wynik.stopped_early
+    assert wynik.covered_to == dzien_pierwszy       # wznowimy od następnej doby
+    assert wynik.skipped_days == []                 # brak czasu to nie dziura w danych
+
+
+def test_retries_stop_when_the_budget_is_spent(monkeypatch):
+    """Ponowienie, które nie zdąży się odbyć, tylko przepala limit żądania."""
+    import app.dukascopy as duka
+
+    zegar = {"teraz": 1000.0}
+    monkeypatch.setattr(duka.time, "monotonic", lambda: zegar["teraz"])
+    monkeypatch.setattr(duka.time, "sleep", lambda s: zegar.__setitem__("teraz", zegar["teraz"] + s))
+
+    polaczenie = podstaw_polaczenie(monkeypatch, [_Odpowiedz(503)] * 10)
+    duka.TERMIN.ustaw(zegar["teraz"] - 1)           # budżet już wyczerpany
+    try:
+        # Póki nie wolno odpuszczać (pierwsza doba), plik dostaje jedno podejście —
+        # ale bez dobijania się, na które i tak nie ma czasu.
+        assert duka._fetch_hour("https://x/y/00h_ticks.bi5") is None
+        assert polaczenie.zapytania == 1
+
+        # Od drugiej doby wolno odpuścić: pytanie, na które nie ma budżetu, nie idzie wcale.
+        duka.TERMIN.pozwol_odpuszczac()
+        assert duka._fetch_hour("https://x/y/01h_ticks.bi5") is None
+        assert polaczenie.zapytania == 1            # bez zmian — żądanie nie poszło
+    finally:
+        duka.TERMIN.ustaw(None)
+        duka.HAMULEC.zapomnij()
+
+
+def test_a_throttled_day_still_respects_the_step_budget(tmp_path, monkeypatch):
+    """Hamulec zwęża strumień nawet do dwóch wątków. Doba to wtedy kilkanaście rund po
+    pełnym timeoucie — czyli znowu wielokrotność limitu żądania, mimo sprawdzania budżetu
+    między dobami. Pliki czekające w kolejce muszą odpaść od razu, gdy czasu już nie ma.
+    """
+    import app.dukascopy as duka
+
+    zegar = {"teraz": 1000.0}
+    monkeypatch.setattr(duka.time, "monotonic", lambda: zegar["teraz"])
+    monkeypatch.setattr(duka.time, "sleep", lambda s: zegar.__setitem__("teraz", zegar["teraz"] + s))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+    def wolne(url: str):
+        if "candles" in url:
+            return b""
+        zegar["teraz"] += duka.TIMEOUT_SECONDS
+        return None
+
+    monkeypatch.setattr(duka, "_fetch_hour", lambda url: (
+        None if duka.TERMIN.minal() else wolne(url)))
+
+    budzet, start = 39.0, zegar["teraz"]
+    wynik = duka.download_window(start=date(2024, 1, 2), end=date(2024, 1, 12),
+                                 cache_dir=tmp_path, deadline=start + budzet,
+                                 use_candles=False, tolerate_gaps=True)
+
+    zuzyte = zegar["teraz"] - start
+    assert zuzyte < budzet + 24 * duka.TIMEOUT_SECONDS, f"krok zajął {zuzyte:.0f} s"
+    assert wynik.stopped_early
+
+
+def test_a_discarded_day_does_not_inflate_the_gap_count(tmp_path, monkeypatch):
+    """Doba porzucona z braku czasu wraca do kolejki w całości, więc jej niepowodzenia
+    nie mogą zostać w statystyce — inaczej gotowy zbiór donosiłby o dziurach, których nie ma."""
+    import app.dukascopy as duka
+
+    zegar = {"teraz": 1000.0}
+    monkeypatch.setattr(duka.time, "monotonic", lambda: zegar["teraz"])
+    monkeypatch.setattr(duka.time, "sleep", lambda s: zegar.__setitem__("teraz", zegar["teraz"] + s))
+    monkeypatch.setattr(duka, "DEAD_DAY_PAUSE", 0)
+
+    pierwszy = date(2024, 1, 2)
+
+    def _fetch(url: str):
+        if "candles" in url:
+            return b""
+        if f"/{pierwszy.day:02d}/" in url:
+            return make_bi5([(0, 126_350, 126_340)])
+        zegar["teraz"] += duka.TIMEOUT_SECONDS
+        return None
+
+    monkeypatch.setattr(duka, "_fetch_hour", _fetch)
+    wynik = duka.download_window(start=pierwszy, end=date(2024, 1, 12), cache_dir=tmp_path,
+                                 deadline=zegar["teraz"] + 30, use_candles=False,
+                                 tolerate_gaps=True)
+
+    assert wynik.stopped_early
+    assert wynik.failed_hours == 0        # pierwsza doba przyszła w całości, reszta nie liczy się
+    assert wynik.skipped_days == []

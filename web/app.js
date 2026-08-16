@@ -1343,9 +1343,12 @@ async function resumeArchive() {
 async function runArchiveLoop() {
   if (state.archiveRunning) return;         // dwie pętle deptałyby sobie po krokach
   state.archiveRunning = state.archiveDriving = true;
-  // Przycisk startu zostaje czynny: trwające pobieranie nie może odbierać możliwości
-  // zmiany instrumentów. Kliknięcie w trakcie zastąpi plan, nie zawiśnie na odmowie.
-  odswiezPrzyciskArchiwum();
+  // Panel musi odpowiedzieć na kliknięcie od razu. Pierwszy krok potrafi trwać kilkadziesiąt
+  // sekund, a do jego powrotu nic by się nie zmieniło: „Wznów" dalej by wisiał, pasek dalej
+  // mówił „wstrzymane" — czyli przycisk wyglądałby na niedziałający.
+  // Przycisk startu zostaje przy tym czynny: trwające pobieranie nie może odbierać
+  // możliwości zmiany instrumentów.
+  renderArchive({ plan: state.archivePlan, progress: state.archiveProgress });
   try {
     for (;;) {
       const dane = await callApi('api/archive/step', { method: 'POST' }, { allowRecovery: false });
